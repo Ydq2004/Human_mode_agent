@@ -42,6 +42,7 @@ from memory.store_manager import (
     initialize_genesis_memory,
 )
 from memory.experience_store import save_experience_slice
+from memory import commit_store
 
 
 _DEBUG_SEPARATOR = "-" * 72
@@ -567,12 +568,19 @@ def _consume_finished_appraisal_jobs(
                 f"评价任务缺少提交上下文：{job['job_id']}"
             )
 
+        # 旧调用者可能把提交上下文放在 commit_contexts，而不是 job 本身。
+        # 先合并成一份快照，再写账本和提交，保证两种入口得到同样的结果。
+        ledger_job = deepcopy(job)
+        ledger_job["event_sequence"] = event_sequence
+        ledger_job["thread_id"] = thread_id
+
         try:
+            commit_store.record_appraisal_terminal(ledger_job)
             commit_worker.submit(CommitTask(
                 job_id=job["job_id"],
                 event_sequence=event_sequence,
                 thread_id=thread_id,
-                appraisal_job=deepcopy(job),
+                appraisal_job=ledger_job,
             ))
         except Exception:
             appraisal_worker.release_delivery(job["job_id"])
@@ -604,6 +612,20 @@ def _print_commit_job(job: dict) -> None:
         if job.get(key) is not None
     })
     _print_debug_value("写入结果", job.get("result"))
+
+
+def _record_and_submit_commit(
+    appraisal_job: dict,
+    commit_worker: CommitWorker,
+) -> None:
+    """评价终态先写入持久账本，再交给有序提交线程。"""
+    commit_store.record_appraisal_terminal(appraisal_job)
+    commit_worker.submit(CommitTask(
+        job_id=appraisal_job["job_id"],
+        event_sequence=appraisal_job["event_sequence"],
+        thread_id=appraisal_job["thread_id"],
+        appraisal_job=deepcopy(appraisal_job),
+    ))
 
 
 def _consume_finished_commit_jobs(
@@ -660,16 +682,15 @@ def main():
     # 两个 worker 通过回调连接：评价完成后立即把“终态快照”交给提交 worker，
     # 不必等下一次用户输入时轮询。deepcopy 让下游拿到独立数据，不依赖上游内部对象。
     commit_worker = CommitWorker(
-        MemoryCommitService(identity_llm=appraisal_llm)
+        MemoryCommitService(identity_llm=appraisal_llm),
+        ledger=commit_store,
     )
     appraisal_worker = AppraisalWorker(
         appraisal_llm,
-        on_terminal=lambda job: commit_worker.submit(CommitTask(
-            job_id=job["job_id"],
-            event_sequence=job["event_sequence"],
-            thread_id=job["thread_id"],
-            appraisal_job=deepcopy(job),
-        )),
+        on_terminal=lambda job: _record_and_submit_commit(
+            job,
+            commit_worker,
+        ),
     )
     thread_id = DEFAULT_THREAD_ID
     agent_config["configurable"]["thread_id"] = thread_id

@@ -928,7 +928,7 @@ Phase 0 的事实写入与认知情绪印记写入分开处理：事实候选由
 - 自动化契约与集成测试已覆盖有序水位、失败推进、进程内幂等、方向规范化、same 情绪转换、related 建边和提交时情绪重算；当前完整测试为 `124/124` 通过。
 - 每轮无冲击时的基线回归已接入：`emotion.appraisal_rules.compute_committed_mood_change` 只在 `mood_impact == 0` 时向基线移动一步，`emotion.manager.commit_mood_effect` 在同一 SQLite 事务中写入最终值。`begin_perception_event` 的离线时间回归仍是另一条独立机制。
 - 真实 LLM 与真实存储开放验收已完成：`create/update/reinforce`、已有认知情绪更新、`related` 创建独立实体并写入一跳关系、正负 mood 冲击、零冲击基线回归、跨重启召回和退出排空均已实际到达；一次验收中的 6 个任务按事件序号全部进入 `committed`，没有 `commit_failed`。
-- Step 6 到此收口。跨进程提交账本、SQLite/Chroma 修复队列和不可变 ExperienceSlice 存储不冒充已经完成，转入后续施工。
+- Step 6 到此收口。不可变 ExperienceSlice 存储和跨进程提交账本已有第一版；SQLite/Chroma 修复队列、情景摘要和人格演化仍转入后续施工。
 
 任务：
 

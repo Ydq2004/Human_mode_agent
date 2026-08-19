@@ -47,8 +47,11 @@ class CommitWorker:
     def __init__(
         self,
         commit_fn: Callable[[CommitTask], dict[str, Any]],
+        *,
+        ledger=None,
     ) -> None:
         self._commit_fn = commit_fn
+        self._ledger = ledger
         self._condition = Condition()
         self._pending: dict[int, CommitTask] = {}
         self._records: dict[str, _CommitRecord] = {}
@@ -186,6 +189,8 @@ class CommitWorker:
                 record.status = COMMITTING
 
             try:
+                if self._ledger is not None:
+                    self._ledger.mark_commit_started(task.job_id)
                 result = self._commit_fn(task)
                 if not isinstance(result, dict):
                     result = {"value": result}
@@ -193,11 +198,23 @@ class CommitWorker:
                     record.status = COMMITTED
                     record.result = deepcopy(result)
                     record.completed_at = datetime.now().isoformat()
+                if self._ledger is not None:
+                    self._ledger.mark_commit_terminal(
+                        task.job_id,
+                        status=COMMITTED,
+                        result=result,
+                    )
             except Exception as exc:
                 with self._condition:
                     record.status = COMMIT_FAILED
                     record.error = f"{type(exc).__name__}: {exc}"
                     record.completed_at = datetime.now().isoformat()
+                if self._ledger is not None:
+                    self._ledger.mark_commit_terminal(
+                        task.job_id,
+                        status=COMMIT_FAILED,
+                        error=f"{type(exc).__name__}: {exc}",
+                    )
             finally:
                 with self._condition:
                     self._next_sequence += 1

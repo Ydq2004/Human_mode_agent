@@ -57,7 +57,8 @@
 代码已经完成感知理解、自动认知唤起、主 Agent、`ExperienceSlice`、后台 `ExperienceAppraisal`、规则计算和进程内有序提交闭环。主回复不等待 appraisal；评价完成后由独立 `CommitWorker` 按事件序号提交 mood、事实认知、认知情绪和一跳关系。
 
 - 回应前：`core/context_builder.py` 使用 `PerceptionFrame`、精简后的 `PerceptionUnderstanding` 和新的 `memory.retrieval_engine`，把有限、非穷尽的结果作为自动认知唤起，返回结构化 `activated_memory_refs` 和 `memory_activation_state`。
-- 回应后：`ExperienceSlice` 记录感知、理解、自动唤起引用、Agent 当时可见的能力快照、认知访问状态、AgentAction、观察、事件开始状态快照和结构化 `preceding_context`。现在会在提交后台评价前追加写入 `sql_db.db` 的 `experience_slices` 表，并支持按 id、时间范围和线程读取；摘要、人格证据和跨进程提交账本仍未实现。
+- 回应后：`ExperienceSlice` 记录感知、理解、自动唤起引用、Agent 当时可见的能力快照、认知访问状态、AgentAction、观察、事件开始状态快照和结构化 `preceding_context`。现在会在提交后台评价前追加写入 `sql_db.db` 的 `experience_slices` 表，并支持按 id、时间范围和线程读取；摘要和人格证据仍未实现。
+- 后台 appraisal 终态、提交状态、结果和错误会写入同一 SQLite 的 `commit_ledger` 表。它能在重启后告诉我们任务停在哪里；当前只记录和查询，不会自动重跑未完成任务。
 - `process_perception_event` 冻结经历后立即向单 worker FIFO 队列提交 appraisal，只把 `pending/completed/failed` 任务真值和稳定 job id 返回给调用方，不等待后台 LLM。
 - CLI 先显示主回复，再在后续事件边界输出已经完成的后台结果；后台异常保存在任务记录中，不伪装成 fallback，也不在线程中静默消失。
 - `compute_appraisal_effects` 只计算 mood、已有认知情绪变化意图和新认知初始印象候选，不写运行状态或长期认知。已有认知更新不再携带会过时的绝对分数或标签。
@@ -90,9 +91,8 @@ PerceptionEvent
 
 当前仍未完成：
 
-- 跨进程持久提交账本；当前幂等集合只在本次进程内有效。
 - SQLite 已成功而 Chroma 同步失败时的持久修复队列；当前会把任务标成 `commit_failed`，不会伪装成完整成功。
-- ExperienceSlice 的第一版追加存储和跨进程读取已完成；仍未完成跨进程持久提交账本、存储修复队列、日/周/月摘要和只读回忆工具。
+- ExperienceSlice 的第一版追加存储和跨进程读取已完成；提交账本已完成；仍未完成存储修复队列、日/周/月摘要和只读回忆工具。
 
 已补齐：
 
@@ -222,7 +222,7 @@ ExperienceSlice（不可变原始经历）
 
 边界：
 
-1. ExperienceSlice 已有第一版追加式持久化，并保留 `slice_id/event_id/action_id/observation_id` 等来源引用；人格反思启动前仍需完成存储验收和跨进程提交账本。
+1. ExperienceSlice 已有第一版追加式持久化，并保留 `slice_id/event_id/action_id/observation_id` 等来源引用；人格反思启动前仍需完成存储验收。
 2. `trait_evidence` 与其他结构可以住在同一个 SQLite；“独立”表示职责和表结构独立，不表示新建数据库。它必须保存来源、反证、作用域、行为来源、去重状态和算法版本。
 3. `TRAIT_INSIGHT` 未来可以作为新的记忆类型进入普通检索，但它只是 `PersonalitySnapshot` 的自然语言派生摘要。人格反思不能把旧 `TRAIT_INSIGHT` 当成新的行为证据，防止自我强化循环。
 4. `PersonalitySnapshot` 是当前人格的结构化权威状态；`_statistic_override` 只能是它的文本渲染，不能由 LLM 随意覆盖。
@@ -262,7 +262,7 @@ PerceptionEvent
 
 ## 下一步施工顺序
 
-1. 完善 ExperienceSlice 存储验收，并建立跨进程持久提交账本和必要的存储修复机制，不能继续用进程内集合冒充崩溃恢复能力。
+1. 完善 ExperienceSlice 存储验收，并建立 SQLite/Chroma 不一致时的存储修复机制。
 2. 基于持久化经历修正时间上下文和短期对话压缩，再建设片段/每日摘要与只读经历查询；派生摘要不能覆盖原始经历。
 3. 经历证据稳定后，再依次建设 `trait_evidence`、`PersonalitySnapshot` 和只作派生展示的 `TRAIT_INSIGHT`；在此之前不实现人格更新。
 4. 延迟分布、mood 20/50/80 表达差异、新认知初始分边界堆积、单次互动候选过多和关系邻居排序继续作为观察项，不阻塞当前存储主线。

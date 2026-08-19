@@ -73,12 +73,12 @@ Step 6 有序写入稳定
 
 ### 已确认事实
 
-- 当前已经有 `experience_slices` SQLite 表、追加式写入和按 id/时间范围/线程读取；但 appraisal/commit 的跨进程持久账本和存储修复队列仍未完成。
+- 当前已经有 `experience_slices` SQLite 表、追加式写入和按 id/时间范围/线程读取，也已经有 `commit_ledger` 记录 appraisal/commit 状态；SQLite/Chroma 不一致时的存储修复队列仍未完成。
 - checkpoint 只包含 Agent 运行状态，不能完整替代感知、状态快照、检索引用、行动和观察组成的经历切片。
 
 ### 处理要求
 
-- 继续完善追加式、不可变的经历存储验收，并补齐跨进程提交账本。
+- 继续完善追加式、不可变的经历存储验收，并补齐 SQLite/Chroma 存储修复机制。账本当前只负责记录和查询，不自动重跑任务。
 - 至少保存 `slice_id`、`event_id`、事件时间、感知来源、理解结果、检索引用、`action_id`、`observation_id`、状态快照和完成时间。
 - 原始经历不得被摘要覆盖；更正应通过新记录或明确版本关系表达。
 - 写入必须使用稳定 id 幂等，避免重启或重试制造重复经历。

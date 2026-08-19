@@ -88,20 +88,27 @@ def create_agent_from_persona(tools: list = None):
       model_cfg = get_model_config(persona)
       provider = model_cfg.get("provider", "deepseek")
 
-      if provider == "gemini":
-        default_base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
-        default_model = "gemini-3.7-flash"
-        api_key = model_cfg.get("api_key_env", "")
-      else:
-        default_base_url = "https://api.deepseek.com"
-        default_model = "deepseek-v4-flash"
-        api_key = os.environ.get("DEEPSEEK_API_KEY", "")
+      default_base_url = "https://api.deepseek.com"
+      default_model = "deepseek-v4-flash"
+      
 
       # 根据 provider 决定 api_key
       base_url = model_cfg.get("base_url", default_base_url)
       model_name = model_cfg.get("model_name", default_model)
-      if not api_key:
+     
+      api_key_env_name = str(
+           model_cfg.get("api_key_env", "DEEPSEEK_API_KEY")
+        ).strip()
+      
+      if not  api_key_env_name:
           api_key = DEEPSEEK_API_KEY
+
+      api_key = os.environ.get(api_key_env_name, "").strip()
+
+      if not api_key:
+           raise RuntimeError(
+           f"环境变量 {api_key_env_name} 未设置或为空"
+        )
 
       # 2. 主 LLM (前台自然语言回复)
       llm = ChatOpenAI(
@@ -129,6 +136,7 @@ def create_agent_from_persona(tools: list = None):
          model=model_name,
           api_key=api_key,
           base_url=base_url,
+           reasoning_effort="max",
           temperature=UNDERSTANDING_LLM_TEMPERATURE,
           max_tokens=UNDERSTANDING_LLM_MAX_TOKENS,
           timeout=UNDERSTANDING_LLM_TIMEOUT_SECONDS,
@@ -140,6 +148,7 @@ def create_agent_from_persona(tools: list = None):
          model=model_name,
           api_key=api_key,
           base_url=base_url,
+          reasoning_effort="high",
           temperature=APPRAISAL_LLM_TEMPERATURE,
           max_tokens=APPRAISAL_LLM_MAX_TOKENS,
           timeout=APPRAISAL_LLM_TIMEOUT_SECONDS,

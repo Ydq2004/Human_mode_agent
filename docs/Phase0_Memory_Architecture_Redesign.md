@@ -418,7 +418,7 @@ LangGraph checkpoint 的职责是恢复 Agent 的短期运行状态，不是保�
 3. 后续压缩可能再次总结旧总结，形成有损漂移；派生的关系解释、情绪结论或人格判断可能在循环中逐渐被强化。
 4. checkpoint 中的旧快照即使仍物理存在，也只是运行状态历史，不能作为不可变事件账本或长期记忆主库。
 
-正式的多时间尺度情景记忆必须以持久化的不可变 `ExperienceSlice` 为原始证据。片段、每日、周/月摘要都是可重建的派生索引，必须保存时间范围、来源 slice id、生成时间和算法/Prompt 版本，并允许从摘要回查原始过程。具体问题队列和施工顺序见 `docs/POST_STEP6_KNOWN_ISSUES.md`；这些工作不进入当前 Step 6 范围。
+正式的多时间尺度情景记忆必须以逐轮持久化的不可变 `ExperienceSlice` 为原始证据。ExperienceSlice 在每轮行动完成后立即追加保存；片段、每日、周/月摘要都是可重建的派生索引，必须保存时间范围、来源 slice id、生成时间和算法/Prompt 版本，并允许从摘要定位一段按时间顺序排列的原始过程。`MemoryEntity` 只提供创建时间和最近提及时间作为回忆线索，不把时间戳当成单条切片身份。具体问题队列和施工顺序见 `docs/POST_STEP6_KNOWN_ISSUES.md`；这些工作不进入当前 Step 6 范围。
 
 #### 最终一致的 ExperienceAppraisal 契约
 

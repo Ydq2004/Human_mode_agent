@@ -40,7 +40,7 @@
   
 
     "model": {
-      "provider": "deepseek",
+      "provider": "中转站",
       "model_name": "deepseek-v4-flash",
       "temperature": 0.8,
       "base_url": "https://api.deepseek.com",

@@ -67,11 +67,11 @@ MOOD_IMPACT_MAX = 10
 # 例：mild_positive(4) * medium(0.6) * reactivity(1.0) = +2.4，四舍五入为 +2。
 # 调大某一项：该类事件更容易推动 mood；正负值必须保持方向一致。
 MOOD_EVENT_VALENCE_BIAS = {
-    "strong_positive": 8,
-    "mild_positive": 4,
+    "strong_positive": 3,
+    "mild_positive": 1,
     "neutral": 0,
-    "mild_negative": -4,
-    "strong_negative": -8,
+    "mild_negative": -2,
+    "strong_negative": -3,
 }
 
 # 事件“显著性”对 mood 的倍率。它只调节幅度，不创造正负方向。

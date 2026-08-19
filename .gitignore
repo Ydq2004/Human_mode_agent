@@ -4,6 +4,8 @@
 *.pyc
 /.test_tmp/
 
+#聊天记录
+/Card_slot/memory_db/
 
 # AI 工具本地配置
 /.claude/

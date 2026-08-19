@@ -1,6 +1,6 @@
 # CURRENT_HANDOFF
 
-更新时间：2026-08-14
+更新时间：2026-08-17
 
 用途：新会话开始时，先读取 `AGENTS.md`、`docs/Phase0_Memory_Architecture_Redesign.md` 和本文件，再继续工作。
 
@@ -57,7 +57,7 @@
 代码已经完成感知理解、自动认知唤起、主 Agent、`ExperienceSlice`、后台 `ExperienceAppraisal`、规则计算和进程内有序提交闭环。主回复不等待 appraisal；评价完成后由独立 `CommitWorker` 按事件序号提交 mood、事实认知、认知情绪和一跳关系。
 
 - 回应前：`core/context_builder.py` 使用 `PerceptionFrame`、精简后的 `PerceptionUnderstanding` 和新的 `memory.retrieval_engine`，把有限、非穷尽的结果作为自动认知唤起，返回结构化 `activated_memory_refs` 和 `memory_activation_state`。
-- 回应后：`ExperienceSlice` 记录感知、理解、自动唤起引用、Agent 当时可见的能力快照、认知访问状态、AgentAction、观察、事件开始状态快照和结构化 `preceding_context`。当前它只是冻结的进程内对象，尚未写入 SQLite；进程退出后不能作为长期反思证据读取。
+- 回应后：`ExperienceSlice` 记录感知、理解、自动唤起引用、Agent 当时可见的能力快照、认知访问状态、AgentAction、观察、事件开始状态快照和结构化 `preceding_context`。现在会在提交后台评价前追加写入 `sql_db.db` 的 `experience_slices` 表，并支持按 id、时间范围和线程读取；摘要、人格证据和跨进程提交账本仍未实现。
 - `process_perception_event` 冻结经历后立即向单 worker FIFO 队列提交 appraisal，只把 `pending/completed/failed` 任务真值和稳定 job id 返回给调用方，不等待后台 LLM。
 - CLI 先显示主回复，再在后续事件边界输出已经完成的后台结果；后台异常保存在任务记录中，不伪装成 fallback，也不在线程中静默消失。
 - `compute_appraisal_effects` 只计算 mood、已有认知情绪变化意图和新认知初始印象候选，不写运行状态或长期认知。已有认知更新不再携带会过时的绝对分数或标签。
@@ -69,15 +69,30 @@
 - `identity_judge` 已增加 `relation_direction`；`relation_service` 负责方向转换、对称端点排序、稳定 relation id、自环拒绝和方向不足时的保守降级。
 - `reinforce` 使用 SQLite 原子 `mention_count + 1`，实体事实写入与认知情绪字段更新分离；结构化主库仍为 SQLite，实体更新同步到 Chroma。
 - `main.py` 只在 commit 进入终态后释放对应 appraisal 引用；正常退出、`KeyboardInterrupt` 和输入流关闭都会先关闭/排空 appraisal，再关闭/排空 commit。
-- 当前完整单元测试为 `124/124` 通过。
+- 本次新增 ExperienceSlice 持久化测试 `4/4` 通过。完整回归当前有 2 个旧 mood 数值断言失败，原因是现行 `config.py` 参数与旧测试期望不一致，不是本次存储改动引起。
 - 真实 LLM 开放验收已经覆盖 `create/update/reinforce`、已有认知情绪更新、`related` 独立实体和一跳关系、正负 mood 冲击、零冲击基线回归、SQLite/Chroma 跨重启召回以及退出排空。
 - 开放验收中 6 个提交任务按 `event_sequence=1~6` 全部进入 `committed`，没有 `commit_failed`。因此 Step 6 的“进程内有序写入闭环”正式完成。
+
+### Step 6 收口判定
+
+```text
+PerceptionEvent
+-> 回应前自动认知唤起
+-> 主 Agent 回复/行动
+-> 冻结 ExperienceSlice
+-> 后台 ExperienceAppraisal
+-> 规则层 AppraisalEffects
+-> CommitWorker 按 event_sequence 有序提交
+-> mood / SQLite 认知实体与关系 / Chroma 索引同步
+```
+
+“Step 6 完成”严格表示：单进程生命周期内，评价结果能够在不阻塞主回复的前提下，按事件顺序、至多一次地进入当前权威状态和长期认知系统；失败状态可见，正常退出会排空后台任务。它不表示已经具备跨进程任务恢复、持久幂等账本、存储修复队列或长期经历档案，这些能力不得被当前内存状态冒充。
 
 当前仍未完成：
 
 - 跨进程持久提交账本；当前幂等集合只在本次进程内有效。
 - SQLite 已成功而 Chroma 同步失败时的持久修复队列；当前会把任务标成 `commit_failed`，不会伪装成完整成功。
-- 不可变 `ExperienceSlice` 持久化和跨进程读取；这是 Step 6 完成后的下一条施工主线。
+- ExperienceSlice 的第一版追加存储和跨进程读取已完成；仍未完成跨进程持久提交账本、存储修复队列、日/周/月摘要和只读回忆工具。
 
 已补齐：
 
@@ -102,7 +117,7 @@
 前台：
 PerceptionEvent
 -> PerceptionFrame（一次事件状态快照）
--> 精简 PerceptionUnderstanding（情境、检索线索、不确定性）
+-> 精简 PerceptionUnderstanding（情境、检索线索、能力约束、不确定性）
 -> 新检索引擎
 -> Agent 回复/工具行动/观察
 -> ExperienceSlice（冻结的经历记录）
@@ -135,7 +150,7 @@ Step 6：
 
 本次审核新增边界：
 
-12. `PerceptionUnderstanding` 的正式输出收缩为 `understanding_status`、`situated_understanding`、`memory_activation_cues`、`uncertainties`。原始事实已经由 `PerceptionEvent` 保存；不得再次生成冗长事实复述、注意力用途枚举或下一步回复建议。
+12. `PerceptionUnderstanding` 的正式输出收缩为 `understanding_status`、`situated_understanding`、`memory_activation_cues`、`capability_constraints`、`uncertainties`。其中 `understanding_status` 由代码产生；原始事实已经由 `PerceptionEvent` 保存，不得再次生成冗长事实复述、注意力用途枚举或下一步回复建议。
 13. 自动认知唤起不只服务“用户主动询问过去”。只要既有个人认知可能实质改变本轮理解、回应、行动、情绪评价或后续身份裁决，就应生成 `memory_activation_cues`；普通通用知识和仅靠当前上下文即可处理的事件仍返回空数组。
 14. 主 Agent 的 System Prompt 保存稳定使用规则：当前 Phase 0 由 Persona 提供长期表达基线，mood 调节短时耐心、主动性和表达幅度，认知情绪印记只影响直接相关对象；三者按作用域并行生效，不做“有认知就忽略 mood”的瀑布回退。当前明确证据优先于可能过时的记忆。每回合动态注入只提供真实状态、被唤起认知和当前能力。
 15. 长期认知由后台框架评价、裁决和提交，不是主 Agent 可直接操作的工具。主 Agent 在回复时不知道候选最终会被写入、合并还是驳回，因此不逐条请示是否保存，也不能声称已经保存、更新或删除；用户明确的“不记住/仅临时”要求必须作为事件证据保留。
@@ -183,7 +198,10 @@ Agent 明确发起只读查询 -> 搜索当前整合认知和情景摘要
 - LangChain 的通用 `SummarizationMiddleware` 达到阈值后会用“一条机器总结 + 最近消息”替换 Agent 的活动消息状态，随后由 LangGraph 写入新的 checkpoint；它不是只压缩某一次临时模型请求。
 - 当前默认总结 Prompt 面向任务型 Agent，要求提取 session intent、summary、artifacts 和 next steps；它没有本项目的来源、事实、关系、情绪和不确定性边界。总结还会作为 `HumanMessage` 回到活动历史，存在把机器推断伪装成用户内容的风险。
 - checkpoint 只负责短期运行恢复，不是长期经历权威库。旧 checkpoint 快照即使仍物理存在，也不能代替不可变事件档案。
-- Step 6 稳定后，应先持久化不可变 `ExperienceSlice`，再建设短期上下文压缩、片段/每日摘要、周/月反思和只读经历查询工具。所有派生摘要必须保留时间范围、来源 slice id、生成时间和算法/Prompt 版本，且不得覆盖原始经历。
+- Step 6 已完成，当前应先逐轮持久化不可变 `ExperienceSlice`，再建设短期上下文压缩、片段/每日摘要、周/月反思和只读经历查询工具。每轮切片立即保存；日、周、月只是对已经保存的切片做派生摘要。所有派生摘要必须保留时间范围、来源 slice id、生成时间和算法/Prompt 版本，且不得覆盖原始经历。
+- `MemoryEntity` 不保存完整的切片历史。它只提供 `created_at` 和 `last_mentioned_at` 作为时间线索；Agent 需要回忆具体过程时，按时间范围读取一组 ExperienceSlice，而不是把某个时间误当成唯一切片 id。
+- 情景摘要用于快速定位，原始 ExperienceSlice 才是具体过程。摘要命中后，回忆工具应返回对应时间范围内按事件顺序排列的多条经历。
+- 替换通用 `SummarizationMiddleware` 时，只替换“旧对话如何压缩”的方法，不替换 checkpoint 本身。checkpoint 仍维护当前对话上下文；项目自己的压缩器根据 ExperienceSlice 生成短期工作摘要，并与最近几轮原文一起提供给 Agent。
 - 已确认的风险、施工顺序和验收条件统一记录在 `docs/POST_STEP6_KNOWN_ISSUES.md`。
 
 ## Step 6 之后的人格演化统一方案
@@ -204,7 +222,7 @@ ExperienceSlice（不可变原始经历）
 
 边界：
 
-1. `ExperienceSlice` 当前没有持久化。Step 6 稳定后、人格反思启动前，必须先建立不可变经历存储，并保留 `slice_id/event_id/action_id/observation_id` 等来源引用。
+1. ExperienceSlice 已有第一版追加式持久化，并保留 `slice_id/event_id/action_id/observation_id` 等来源引用；人格反思启动前仍需完成存储验收和跨进程提交账本。
 2. `trait_evidence` 与其他结构可以住在同一个 SQLite；“独立”表示职责和表结构独立，不表示新建数据库。它必须保存来源、反证、作用域、行为来源、去重状态和算法版本。
 3. `TRAIT_INSIGHT` 未来可以作为新的记忆类型进入普通检索，但它只是 `PersonalitySnapshot` 的自然语言派生摘要。人格反思不能把旧 `TRAIT_INSIGHT` 当成新的行为证据，防止自我强化循环。
 4. `PersonalitySnapshot` 是当前人格的结构化权威状态；`_statistic_override` 只能是它的文本渲染，不能由 LLM 随意覆盖。
@@ -213,13 +231,42 @@ ExperienceSlice（不可变原始经历）
 7. 框架层定义连续特质 registry 的协议、行为锚、未知状态和聚合规则；persona 层提供有依据的出生初值并选择已定义扩展；实例层保存证据与当前版本。Big Five、荣格八维或自定义维度现在不拍板，MBTI 只可作派生展示或诊断。
 8. 当前人格接入后，每轮只注入 `current_personality`，不能再把出生人格作为第二份行为权重重复注入。身份、知识、安全和副作用边界不随人格演化改写。
 
+## 后续可选扩展：Somatic Simulation
+
+`Somatic Simulation`（身体状态与内感受模拟）是未来的通用框架扩展，成人身体模型只是其中一个可选扩展，不属于当前 Persona 的硬编码行为。
+
+它的目标不是让主 Agent 根据括号文本自行想象身体反应，而是把可能影响 Agent 身体的模拟事件转换成可追踪的身体状态、内感受和本能行动。按需触发的建议流程如下：
+
+```text
+PerceptionEvent
+-> 通用 module_requests 路由提示
+-> 模拟事件裁决（occurred / rejected / uncertain）
+-> Somatic Appraisal 提出状态变化方向
+-> 代码校验并提交 SomaticState
+-> 生成内感受 PerceptionEvent 与可见本能 AgentAction
+-> 主 Agent 回复
+-> ExperienceSlice 保存完整来源链
+```
+
+边界：
+
+1. 用户文本或括号动作只是模拟动作提议，不等于身体接触已经发生。`module_requests` 只能请求模块处理，不能直接改变身体状态。
+2. 模拟事件裁决必须保留对象、部位、强度、持续时间和不确定性；只有确认发生的事件才能进入身体状态更新。
+3. 身体评价 LLM 只提出方向、幅度和解释；最终状态由代码校验、钳制和提交，不能由 LLM 直接覆盖绝对值。
+4. 内感受属于 Agent 的内部感知，可作为 `somatic/interoception` 事件注入主 Agent；可见本能反应属于 `AgentAction`，必须进入 `ExperienceSlice`，不能只打印后丢失。
+5. mood 可以作为身体评价的背景输入，但身体反应不能直接证明同意、好感或关系升级；身体状态与情绪、关系和安全边界必须保持分离。
+6. 通用框架只定义身体事件、状态真值和模块协议；成人专用的生理字段、身体模型和表达方式放入可选扩展或角色配置。
+7. 该扩展必须在经历证据持久化契约稳定后再接入，确保身体状态变化、内感受、可见反应和主 Agent 行动都能回溯到原始 `ExperienceSlice`。
+
+当前决定：Somatic Simulation 仍是后续通用扩展，不插入 ExperienceSlice 持久化、情景记忆和人格演化的当前主线。它以后产生的身体状态、内感受和可见反应，必须和普通用户事件一样进入 ExperienceSlice，不能另建一套无法回溯的历史。
+
 ## 下一步施工顺序
 
-1. 持久化不可变 `ExperienceSlice`：使用稳定 id、追加式写入，支持按 id、时间范围和线程跨进程读取，并保留感知、理解、唤起引用、能力快照、行动、观察和状态快照的来源边界。
-2. 建立跨进程持久提交账本和必要的存储修复机制，不能继续用进程内集合冒充崩溃恢复能力。
-3. 基于持久化经历修正时间上下文和短期对话压缩，再建设片段/每日摘要与只读经历查询；派生摘要不能覆盖原始经历。
-4. 经历证据稳定后，再依次建设 `trait_evidence`、`PersonalitySnapshot` 和只作派生展示的 `TRAIT_INSIGHT`；在此之前不实现人格更新。
-5. 延迟分布、mood 20/50/80 表达差异、新认知初始分边界堆积、单次互动候选过多和关系邻居排序继续作为观察项，不阻塞 ExperienceSlice 持久化主线。
+1. 完善 ExperienceSlice 存储验收，并建立跨进程持久提交账本和必要的存储修复机制，不能继续用进程内集合冒充崩溃恢复能力。
+2. 基于持久化经历修正时间上下文和短期对话压缩，再建设片段/每日摘要与只读经历查询；派生摘要不能覆盖原始经历。
+3. 经历证据稳定后，再依次建设 `trait_evidence`、`PersonalitySnapshot` 和只作派生展示的 `TRAIT_INSIGHT`；在此之前不实现人格更新。
+4. 延迟分布、mood 20/50/80 表达差异、新认知初始分边界堆积、单次互动候选过多和关系邻居排序继续作为观察项，不阻塞当前存储主线。
+5. 经历证据持久化稳定后，再设计按需 `Somatic Simulation`：先完成通用模块请求和模拟事件裁决，再建设身体状态提交、内感受事件和可见本能行动；成人身体模型作为后续可选扩展。
 
 候选在 Phase 0 期间只在进程内从 Step 5 传给 Step 6；进程崩溃时丢弃，不建立持久化任务队列。
 

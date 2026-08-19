@@ -41,6 +41,7 @@ from memory.store_manager import (
     ensure_memory_store,
     initialize_genesis_memory,
 )
+from memory.experience_store import save_experience_slice
 
 
 _DEBUG_SEPARATOR = "-" * 72
@@ -396,6 +397,15 @@ def process_perception_event(
             or {}
         ),
         preceding_context=_build_preceding_context(recent_context),
+    )
+
+    # 先保存“已经发生的完整经历”，再把它交给后台评价。
+    # 评价可能失败或进程随后退出，但原始经历不能因为评价失败而消失。
+    # save_experience_slice 采用稳定 slice_id + 内容哈希，重复提交是幂等的。
+    save_experience_slice(
+        experience_slice,
+        thread_id=thread_id,
+        event_sequence=event_sequence,
     )
 
     mood_reactivity = persona[

@@ -49,7 +49,15 @@ class CommitWorker:
         commit_fn: Callable[[CommitTask], dict[str, Any]],
         *,
         ledger=None,
+        start_sequence: int = 1,
     ) -> None:
+        if (
+            isinstance(start_sequence, bool)
+            or not isinstance(start_sequence, int)
+            or start_sequence < 1
+        ):
+            raise ValueError("start_sequence 必须是大于等于 1 的整数")
+
         self._commit_fn = commit_fn
         self._ledger = ledger
         self._condition = Condition()
@@ -59,7 +67,8 @@ class CommitWorker:
         # job_id 在整个运行期最多执行一次。
         self._seen_job_ids: set[str] = set()
         self._seen_sequences: set[int] = set()
-        self._next_sequence = 1
+        # 该水位可以从持久经历表恢复；默认 1 保持旧调用方式兼容。
+        self._next_sequence = start_sequence
         self._closed = False
         self._thread = Thread(
             target=self._run,

@@ -181,3 +181,10 @@ UNDERSTANDING_LLM_MAX_TOKENS = 4096
 # 当前默认值用于本地测试；部署多用户入口时应由调用方传入独立 thread_id。
 DEFAULT_THREAD_ID = "project_test_001"
 MAX_RECENT_TURN = 5
+
+# 主 Agent 的活动 checkpoint 达到该消息数后，使用项目自己的无网络整理器。
+# 它只保留最近几条原文，并把更早消息变成带来源标记的系统工作上下文。
+# 调大 trigger：更少整理，但模型请求携带的历史更长；调小则相反。
+WORKING_CONTEXT_TRIGGER_MESSAGES = 40
+WORKING_CONTEXT_KEEP_MESSAGES = 16
+WORKING_CONTEXT_MAX_SNAPSHOT_CHARS = 8000

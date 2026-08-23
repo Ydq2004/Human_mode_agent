@@ -31,6 +31,38 @@ def _make_slice(event_id: str, occurred_at: str):
 
 
 class ExperiencePersistenceTests(unittest.TestCase):
+    def test_next_sequence_continues_per_thread_after_restart(self):
+        with tempfile.TemporaryDirectory() as directory:
+            db_path = str(Path(directory) / "experience.db")
+            first = _make_slice("evt-seq-1", "2026-08-17T10:00:00")
+            second = _make_slice("evt-seq-2", "2026-08-17T10:01:00")
+
+            with patch.object(experience_store, "SQLITE_DB_PATH", db_path):
+                self.assertEqual(
+                    experience_store.get_next_event_sequence("thread-a"),
+                    1,
+                )
+                experience_store.save_experience_slice(
+                    first,
+                    thread_id="thread-a",
+                    event_sequence=1,
+                )
+                experience_store.save_experience_slice(
+                    second,
+                    thread_id="thread-a",
+                    event_sequence=2,
+                )
+
+                # 模拟新进程重新打开同一 SQLite 文件。
+                self.assertEqual(
+                    experience_store.get_next_event_sequence("thread-a"),
+                    3,
+                )
+                self.assertEqual(
+                    experience_store.get_next_event_sequence("thread-b"),
+                    1,
+                )
+
     def test_round_trip_preserves_complete_slice(self):
         with tempfile.TemporaryDirectory() as directory:
             db_path = str(Path(directory) / "experience.db")

@@ -81,14 +81,14 @@ class AgentFactoryLLMTests(unittest.TestCase):
             ),
             patch.object(
                 factory,
-                "SummarizationMiddleware",
-                return_value=sentinel.summarizer,
+                "WorkingContextMiddleware",
+                return_value=sentinel.working_context,
             ),
             patch.object(
                 factory,
                 "create_agent",
                 return_value=sentinel.agent,
-            ),
+            ) as create_agent,
         ):
             result = factory.create_agent_from_persona(tools=[])
 
@@ -157,6 +157,9 @@ class AgentFactoryLLMTests(unittest.TestCase):
         self.assertIs(result[4], sentinel.understanding_llm)
         self.assertIs(result[5], sentinel.retry_understanding_llm)
         self.assertIs(result[6], sentinel.appraisal_llm)
+
+        middleware = create_agent.call_args.kwargs["middleware"]
+        self.assertIn(sentinel.working_context, middleware)
 
 
 if __name__ == "__main__":

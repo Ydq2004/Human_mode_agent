@@ -29,7 +29,7 @@ class StoredExperienceSlice:
 
     experience: ExperienceSlice
     thread_id: str | None          #属于哪个对话线程
-    event_sequence: int | None     #第几个事件
+    event_sequence: int | None     #该 thread 内持久递增的事件序号
     stored_at: str
     schema_version: int
 
@@ -98,6 +98,26 @@ def ensure_experience_store() -> None:
             "CREATE INDEX IF NOT EXISTS idx_experience_thread_time "
             "ON experience_slices (thread_id, occurred_at, event_sequence)"
         )
+
+
+def get_next_event_sequence(thread_id: str) -> int:
+    """读取某个对话线程下一条应使用的持久事件序号。
+
+    ``CommitWorker`` 的内存水位只服务当前进程；这里的水位来自 SQLite，
+    所以程序重启后仍会接着已有经历编号。没有历史记录时从 1 开始。
+    """
+    thread_id = str(thread_id or "").strip()
+    if not thread_id:
+        raise ValueError("thread_id 不能为空")
+
+    ensure_experience_store()
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT COALESCE(MAX(event_sequence), 0) + 1 AS next_sequence "
+            "FROM experience_slices WHERE thread_id = ?",
+            (thread_id,),
+        ).fetchone()
+    return int(row["next_sequence"])
 
 
 def _record_hash(

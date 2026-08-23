@@ -14,11 +14,68 @@ from memory.sql_store import (
     reinforce_entity as sql_reinforce_entity,
 )
 from memory.vector_store import vector_db
+from memory.vector_repair_store import (
+    enqueue as enqueue_vector_repair,
+    list_pending as list_pending_vector_repairs,
+    mark_attempt as mark_vector_repair_attempt,
+    mark_failed as mark_vector_repair_failed,
+    mark_repaired as mark_vector_repair_repaired,
+)
 
 
 def ensure_memory_store() -> None:
     """确保 SQLite 记忆表已创建。"""
     create_tables()
+
+
+def _entity_snapshot(entity: MemoryEntity) -> dict[str, Any]:
+    """把当前 SQLite 实体快照转成修复队列可保存的普通字典。"""
+    return {
+        "concept_id": entity.concept_id,
+        "canonical_name": entity.canonical_name,
+        "aliases": list(entity.aliases),
+        "memory_type": entity.memory_type,
+        "identity_signature": dict(entity.identity_signature),
+        "summary": entity.summary,
+        "tags": list(entity.tags),
+        "emotion_score": entity.emotion_score,
+        "emotion_label": entity.emotion_label,
+        "mention_count": entity.mention_count,
+        "revision": entity.revision,
+        "created_at": entity.created_at,
+        "last_accessed_at": entity.last_accessed_at,
+        "last_modified_at": entity.last_modified_at,
+        "source": entity.source,
+        "confidence": entity.confidence,
+    }
+
+
+def _sync_vector_index(entity: MemoryEntity) -> None:
+    """把一个 SQLite 实体同步到 Chroma；失败由调用方记录修复任务。"""
+    doc = _vector_document(entity)
+    existing = vector_db.get(ids=[entity.concept_id])
+    if existing and existing.get("ids"):
+        vector_db.update_document(entity.concept_id, doc)
+    else:
+        vector_db.add_documents([doc], ids=[entity.concept_id])
+
+
+def _sync_or_enqueue(entity: MemoryEntity, operation: str) -> None:
+    """同步失败时记录待修复任务，然后继续抛出原始异常。"""
+    try:
+        _sync_vector_index(entity)
+    except Exception as exc:
+        try:
+            enqueue_vector_repair(
+                entity.concept_id,
+                operation,
+                entity_snapshot=_entity_snapshot(entity),
+                error=f"{type(exc).__name__}: {exc}",
+            )
+        except Exception:
+            # 队列自身如果也暂时不可用，仍不能把真正的索引错误隐藏掉。
+            pass
+        raise exc
 
 
 def build_genesis_entity(persona: dict[str, Any]) -> MemoryEntity | None:
@@ -110,14 +167,8 @@ def upsert_entity(entity: MemoryEntity) -> MemoryEntity:
     # 先写 SQLite，保证结构化主库是权威来源。
     saved = sql_upsert_entity(entity)
 
-    doc = _vector_document(saved)
-
     # Chroma 的 id 直接使用 concept_id，这样不会再依赖 concept_name。
-    existing = vector_db.get(ids=[saved.concept_id])
-    if existing and existing.get("ids"):
-        vector_db.update_document(saved.concept_id, doc)
-    else:
-        vector_db.add_documents([doc], ids=[saved.concept_id])
+    _sync_or_enqueue(saved, "upsert")
 
     return saved
 
@@ -135,12 +186,7 @@ def reinforce_entity(concept_id: str) -> MemoryEntity | None:
     if saved is None:
         return None
 
-    doc = _vector_document(saved)
-    existing = vector_db.get(ids=[saved.concept_id])
-    if existing and existing.get("ids"):
-        vector_db.update_document(saved.concept_id, doc)
-    else:
-        vector_db.add_documents([doc], ids=[saved.concept_id])
+    _sync_or_enqueue(saved, "reinforce")
     return saved
 
 
@@ -158,12 +204,7 @@ def update_entity_content(
     if saved is None:
         return None
 
-    doc = _vector_document(saved)
-    existing = vector_db.get(ids=[saved.concept_id])
-    if existing and existing.get("ids"):
-        vector_db.update_document(saved.concept_id, doc)
-    else:
-        vector_db.add_documents([doc], ids=[saved.concept_id])
+    _sync_or_enqueue(saved, "update")
     return saved
 
 
@@ -181,8 +222,47 @@ def delete_entity(concept_id: str) -> bool:
 
     try:
         vector_db.delete(ids=[concept_id])
-    except Exception:
-        # Chroma 中不存在该 id 时，不影响 SQLite 删除结果。
-        pass
+    except Exception as exc:
+        try:
+            enqueue_vector_repair(
+                concept_id,
+                "delete",
+                error=f"{type(exc).__name__}: {exc}",
+            )
+        except Exception:
+            # 与实体同步相同：队列失败不能遮掉 Chroma 的原始错误。
+            pass
+        # SQLite 删除已经成功；仍把 Chroma 原始错误交给上层，避免伪装成
+        # “索引也已删除”。
+        raise exc
 
     return deleted
+
+
+def repair_pending_vectors(limit: int | None = None) -> list[dict[str, Any]]:
+    """按 SQLite 当前状态重建待修复的 Chroma 索引。
+
+    修复时重新读取 SQLite，而不是信任失败瞬间保存的旧快照；这样后续
+    新提交不会被一次迟到的修复覆盖。删除操作则以 SQLite 中实体不存在
+    为准删除 Chroma 文档。
+    """
+    ensure_memory_store()
+    results = []
+    for task in list_pending_vector_repairs(limit):
+        repair_id = task["repair_id"]
+        mark_vector_repair_attempt(repair_id)
+        try:
+            current = get_entity(task["concept_id"])
+            if current is None:
+                vector_db.delete(ids=[task["concept_id"]])
+            else:
+                _sync_vector_index(current)
+            mark_vector_repair_repaired(repair_id)
+            results.append({"repair_id": repair_id, "status": "repaired"})
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"
+            mark_vector_repair_failed(repair_id, error)
+            results.append(
+                {"repair_id": repair_id, "status": "failed", "error": error}
+            )
+    return results

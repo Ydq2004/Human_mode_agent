@@ -41,7 +41,10 @@ from memory.store_manager import (
     ensure_memory_store,
     initialize_genesis_memory,
 )
-from memory.experience_store import save_experience_slice
+from memory.experience_store import (
+    get_next_event_sequence,
+    save_experience_slice,
+)
 from memory import commit_store
 
 
@@ -675,6 +678,11 @@ def main():
         appraisal_llm,
     ) = create_agent_from_persona(tools=tools)
 
+    thread_id = DEFAULT_THREAD_ID
+    # 事件序号属于该对话线程的长期经历顺序。启动时从 SQLite 继续取号，
+    # 这样重启后不会把新事件重新编号为 1。
+    next_event_sequence = get_next_event_sequence(thread_id)
+
     # 角色卡的初始关系记忆必须先进入权威 SQLite 和 Chroma 索引，
     # 否则“需要检索长期认知”的提示没有可命中的初始实体。
     initialize_genesis_memory(persona)
@@ -684,6 +692,7 @@ def main():
     commit_worker = CommitWorker(
         MemoryCommitService(identity_llm=appraisal_llm),
         ledger=commit_store,
+        start_sequence=next_event_sequence,
     )
     appraisal_worker = AppraisalWorker(
         appraisal_llm,
@@ -692,7 +701,6 @@ def main():
             commit_worker,
         ),
     )
-    thread_id = DEFAULT_THREAD_ID
     agent_config["configurable"]["thread_id"] = thread_id
     exit_command = persona.get("exit_command", "退出")
 
@@ -703,7 +711,7 @@ def main():
 
     recent_context = []
     # 每个有效输入获得一个递增序号，CommitWorker 用它保证长期记忆按事件顺序提交。
-    event_sequence = 0
+    event_sequence = next_event_sequence - 1
     cancel_pending_on_shutdown = False
 
     try:

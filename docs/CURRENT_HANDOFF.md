@@ -1,6 +1,6 @@
 # CURRENT_HANDOFF
 
-更新时间：2026-08-17
+更新时间：2026-08-24
 
 用途：新会话开始时，先读取 `AGENTS.md`、`docs/Phase0_Memory_Architecture_Redesign.md` 和本文件，再继续工作。
 
@@ -65,14 +65,14 @@
 - `PerceptionUnderstanding` 正式契约使用 `understanding_status`、`situated_understanding`、`memory_activation_cues`、`capability_constraints`、`uncertainties`。`understanding_status` 由代码产生；LLM 只提出情境理解、自动唤起线索、与本轮直接相关的能力约束和不确定性。
 - 主 Agent 的 System Prompt 已加入 Persona、mood、局部认知情绪印记、当前证据优先级和后台记忆自我模型；每回合动态注入只提供当前事实和值。
 - Appraisal 保留八步骨架，并已收紧高相关性证据、`persona_effect` 默认值、主观标签边界和原子修正规则。
-- `core/commit_worker.py` 使用单独的非 daemon 线程和 `event_sequence` 水位有序提交；评价失败和提交失败都显式进入终态并推进水位，重复 `job_id` 在进程生命周期内不会再次执行。
+- `core/commit_worker.py` 使用单独的非 daemon 线程和 `event_sequence` 水位有序提交；本次启动的水位可从 SQLite 中该 thread 的最大事件序号继续。评价失败和提交失败都显式进入终态并推进水位，重复 `job_id` 在进程生命周期内不会再次执行。
 - `core/memory_commit.py` 按 `mood -> 事实认知 -> 认知情绪 -> 一跳关系` 提交。`create` 在提交时运行 resolver/judge；`same` 转为 reinforce 并保留候选情绪信号；`related` 创建独立实体后只建立一条经方向规范化的关系。
 - `identity_judge` 已增加 `relation_direction`；`relation_service` 负责方向转换、对称端点排序、稳定 relation id、自环拒绝和方向不足时的保守降级。
 - `reinforce` 使用 SQLite 原子 `mention_count + 1`，实体事实写入与认知情绪字段更新分离；结构化主库仍为 SQLite，实体更新同步到 Chroma。
 - `main.py` 只在 commit 进入终态后释放对应 appraisal 引用；正常退出、`KeyboardInterrupt` 和输入流关闭都会先关闭/排空 appraisal，再关闭/排空 commit。
 - 本次新增 ExperienceSlice 持久化测试 `4/4` 通过。完整回归当前有 2 个旧 mood 数值断言失败，原因是现行 `config.py` 参数与旧测试期望不一致，不是本次存储改动引起。
 - 真实 LLM 开放验收已经覆盖 `create/update/reinforce`、已有认知情绪更新、`related` 独立实体和一跳关系、正负 mood 冲击、零冲击基线回归、SQLite/Chroma 跨重启召回以及退出排空。
-- 开放验收中 6 个提交任务按 `event_sequence=1~6` 全部进入 `committed`，没有 `commit_failed`。因此 Step 6 的“进程内有序写入闭环”正式完成。
+- 开放验收中曾有 6 个提交任务按 `event_sequence=1~6` 全部进入 `committed`，没有 `commit_failed`。现在新的进程会从该 thread 已保存的最大序号之后继续编号；因此事件序号是长期经历顺序，CommitWorker 的内存水位仍只负责当前进程的提交顺序。
 
 ### Step 6 收口判定
 
@@ -87,14 +87,15 @@ PerceptionEvent
 -> mood / SQLite 认知实体与关系 / Chroma 索引同步
 ```
 
-“Step 6 完成”严格表示：单进程生命周期内，评价结果能够在不阻塞主回复的前提下，按事件顺序、至多一次地进入当前权威状态和长期认知系统；失败状态可见，正常退出会排空后台任务。它不表示已经具备跨进程任务恢复、持久幂等账本、存储修复队列或长期经历档案，这些能力不得被当前内存状态冒充。
+“Step 6 完成”严格表示：单进程生命周期内，评价结果能够在不阻塞主回复的前提下，按事件顺序、至多一次地进入当前权威状态和长期认知系统；失败状态可见，正常退出会排空后台任务。它不表示已经具备跨进程任务恢复或长期经历档案，这些能力不得被当前内存状态冒充。
 
 当前仍未完成：
 
-- SQLite 已成功而 Chroma 同步失败时的持久修复队列；当前会把任务标成 `commit_failed`，不会伪装成完整成功。
-- ExperienceSlice 的第一版追加存储和跨进程读取已完成；提交账本已完成；仍未完成存储修复队列、日/周/月摘要和只读回忆工具。
+- ExperienceSlice 的第一版追加存储和跨进程读取已完成；提交账本和 SQLite/Chroma 存储修复队列已完成；日/周/月摘要和只读回忆工具仍未完成。
 
 已补齐：
+
+- `memory/vector_repair_store.py` 创建 `vector_repair_queue`，保存实体、操作、失败原因、尝试次数和状态。`memory/store_manager.py` 在 SQLite 成功而 Chroma 失败时记录任务并继续抛出原始异常；`repair_pending_vectors()` 会重新读取 SQLite 当前实体后显式重建索引。它不会自动无限重试，也不会把失败伪装成完整提交成功。
 
 - `emotion.appraisal_rules.compute_committed_mood_change` 负责纯规则计算：只有 `mood_impact == 0` 时向 `MOOD_BASELINE` 回归一步；非零冲击不叠加回归，基线处保持不变。
 - `emotion.manager.commit_mood_effect` 在同一个 SQLite 事务中写入最终 mood，避免先写入零变化再单独回归的中间状态。
@@ -191,17 +192,18 @@ Agent 明确发起只读查询 -> 搜索当前整合认知和情景摘要
 - 可替换的当前运行实例已经集中到 `Card_slot/`：角色模板位于 `Card_slot/persona_config.json`，当前实例的 checkpoint、SQLite 认知主库和 Chroma 索引位于 `Card_slot/memory_db/`。`config.py` 已统一指向这些路径。
 - 该目录当前应理解为“角色模板 + 单个运行实例状态”的部署槽，不是纯角色卡。单角色、单实例阶段可以保持此布局；未来支持同一 Persona 的多用户或多实例时，必须再分离角色层模板与实例层数据库，不能让替换角色卡静默混用旧实例状态。
 - `PerceptionEvent.occurred_at` 已经是事件发生时间的权威字段，checkpoint 也会把它保存在 `additional_kwargs["perception_event"]` 中。原始 `content` 只能保存感知内容，禁止为了让模型看见时间而把系统时间拼进用户原话。
-- 当前尚未实现“模型调用前把历史 `occurred_at` 临时渲染成可见上下文”。这属于模型输入适配问题，不是事件存储问题；已登记到 `docs/POST_STEP6_KNOWN_ISSUES.md`，不插入当前 Step 6 主线。
+- `core/model_io.py` 的 `render_perception_times_for_model()` 会在主模型真正调用前创建临时消息副本，把历史用户事件的 `occurred_at` 渲染为“系统记录时间”；`core/agent_factory.py` 的 `render_event_times` middleware 在每次模型请求前调用它。渲染不会写回 checkpoint 或 ExperienceSlice。
+- `tests/test_model_io.py` 已覆盖当前事件、旧 checkpoint、普通消息、非用户事件和原消息不变。
 
 ## Checkpoint 与长期情景记忆边界
 
 - LangChain 的通用 `SummarizationMiddleware` 达到阈值后会用“一条机器总结 + 最近消息”替换 Agent 的活动消息状态，随后由 LangGraph 写入新的 checkpoint；它不是只压缩某一次临时模型请求。
 - 当前默认总结 Prompt 面向任务型 Agent，要求提取 session intent、summary、artifacts 和 next steps；它没有本项目的来源、事实、关系、情绪和不确定性边界。总结还会作为 `HumanMessage` 回到活动历史，存在把机器推断伪装成用户内容的风险。
 - checkpoint 只负责短期运行恢复，不是长期经历权威库。旧 checkpoint 快照即使仍物理存在，也不能代替不可变事件档案。
-- Step 6 已完成，当前应先逐轮持久化不可变 `ExperienceSlice`，再建设短期上下文压缩、片段/每日摘要、周/月反思和只读经历查询工具。每轮切片立即保存；日、周、月只是对已经保存的切片做派生摘要。所有派生摘要必须保留时间范围、来源 slice id、生成时间和算法/Prompt 版本，且不得覆盖原始经历。
+- Step 6 已完成，当前已加入短期工作上下文第一版：`core/working_context.py` 在 checkpoint 消息达到阈值时做无网络裁剪，保留最近消息，并用明确标记的 `SystemMessage` 保存旧消息的工作快照。它不替代 `ExperienceSlice`，也不生成长期情景摘要。每轮切片立即保存；片段、日、周、月只是对已经保存的切片做后续派生摘要。所有派生摘要必须保留时间范围、来源 slice id、生成时间和算法/Prompt 版本，且不得覆盖原始经历。
 - `MemoryEntity` 不保存完整的切片历史。它只提供 `created_at` 和 `last_mentioned_at` 作为时间线索；Agent 需要回忆具体过程时，按时间范围读取一组 ExperienceSlice，而不是把某个时间误当成唯一切片 id。
 - 情景摘要用于快速定位，原始 ExperienceSlice 才是具体过程。摘要命中后，回忆工具应返回对应时间范围内按事件顺序排列的多条经历。
-- 替换通用 `SummarizationMiddleware` 时，只替换“旧对话如何压缩”的方法，不替换 checkpoint 本身。checkpoint 仍维护当前对话上下文；项目自己的压缩器根据 ExperienceSlice 生成短期工作摘要，并与最近几轮原文一起提供给 Agent。
+- 通用 `SummarizationMiddleware` 已从主 Agent middleware 链路移除。`WorkingContextMiddleware` 只替换“旧对话如何裁剪”的方法，不替换 checkpoint 本身；它的第一版根据旧消息生成短期工作快照，并与最近几轮原文一起提供给 Agent。后续片段/每日摘要才会以 ExperienceSlice 为唯一原始来源。
 - 已确认的风险、施工顺序和验收条件统一记录在 `docs/POST_STEP6_KNOWN_ISSUES.md`。
 
 ## Step 6 之后的人格演化统一方案
@@ -263,7 +265,7 @@ PerceptionEvent
 ## 下一步施工顺序
 
 1. 完善 ExperienceSlice 存储验收，并建立 SQLite/Chroma 不一致时的存储修复机制。
-2. 基于持久化经历修正时间上下文和短期对话压缩，再建设片段/每日摘要与只读经历查询；派生摘要不能覆盖原始经历。
+2. 时间上下文的第一版已完成；下一步基于持久化经历替换通用短期对话压缩，再建设片段/每日摘要与只读经历查询；派生摘要不能覆盖原始经历。
 3. 经历证据稳定后，再依次建设 `trait_evidence`、`PersonalitySnapshot` 和只作派生展示的 `TRAIT_INSIGHT`；在此之前不实现人格更新。
 4. 延迟分布、mood 20/50/80 表达差异、新认知初始分边界堆积、单次互动候选过多和关系邻居排序继续作为观察项，不阻塞当前存储主线。
 5. 经历证据持久化稳定后，再设计按需 `Somatic Simulation`：先完成通用模块请求和模拟事件裁决，再建设身体状态提交、内感受事件和可见本能行动；成人身体模型作为后续可选扩展。

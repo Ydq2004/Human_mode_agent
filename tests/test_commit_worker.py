@@ -75,6 +75,19 @@ class CommitWorkerTests(unittest.TestCase):
         self.assertEqual(worker.snapshot("job-2")["status"], "commit_failed")
         self.assertIn("MissingEventSequence", worker.snapshot("job-2")["error"])
 
+    def test_worker_can_resume_from_persisted_sequence(self):
+        order = []
+        worker = CommitWorker(
+            lambda task: order.append(task.event_sequence) or {"ok": True},
+            start_sequence=6,
+        )
+        try:
+            worker.submit(CommitTask("job-6", 6, "thread", {}))
+            self.assertEqual(worker.wait("job-6", 2)["status"], "committed")
+            self.assertEqual(order, [6])
+        finally:
+            worker.shutdown()
+
 
 if __name__ == "__main__":
     unittest.main()

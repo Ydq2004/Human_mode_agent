@@ -1,6 +1,6 @@
 # Step 6 完成后待解决问题
 
-更新时间：2026-08-14
+更新时间：2026-08-19
 
 ## 文件用途
 
@@ -35,7 +35,7 @@ Step 6 有序写入稳定
 
 未来只读经历查询工具仍按本文件后续 P1 方案建设，不提前塞进当前自动唤起闭环。
 
-## P0：通用 checkpoint 总结器不符合项目架构
+## P0：通用 checkpoint 总结器不符合项目架构（第一版已替换）
 
 ### 已确认事实
 
@@ -62,6 +62,13 @@ Step 6 有序写入稳定
 - 压缩器只能影响模型工作上下文，不能覆盖不可变经历档案。
 - 摘要必须区分明确事实、角色当时的解释和仍未解决的不确定性。
 
+### 当前实现
+
+- `core/working_context.py` 的 `WorkingContextMiddleware` 已替代通用 `SummarizationMiddleware`。
+- 当前第一版不调用 LLM，只按消息数裁剪 checkpoint，保留最近消息，并生成带 `source=project_working_context` 的 `SystemMessage`。
+- 这条快照只表示“系统整理过的短期工作上下文”，不等于用户原话、长期认知或 ExperienceSlice。
+- 当前实现不自动重写或删除 ExperienceSlice；后续按 ExperienceSlice 生成片段/每日摘要时，必须继续保留原始切片。
+
 ### 验收条件
 
 - 同一份原始经历始终可通过稳定 id 回查。
@@ -69,28 +76,43 @@ Step 6 有序写入稳定
 - 多次压缩不会把未经证实的关系或情绪推断升级为事实。
 - 有测试证明压缩只改变工作上下文，不改变原始 ExperienceSlice。
 
+第一版对应测试：`tests/test_working_context.py`。长期情景摘要仍未实现，不得把本版工作快照称为日/周/月记忆。
+
 ## P0：ExperienceSlice 持久提交链尚未完全稳定
 
 ### 已确认事实
 
-- 当前已经有 `experience_slices` SQLite 表、追加式写入和按 id/时间范围/线程读取，也已经有 `commit_ledger` 记录 appraisal/commit 状态；SQLite/Chroma 不一致时的存储修复队列仍未完成。
+- 当前已经有 `experience_slices` SQLite 表、追加式写入和按 id/时间范围/线程读取，也已经有 `commit_ledger` 记录 appraisal/commit 状态。
+- SQLite/Chroma 不一致时的持久修复队列已完成第一版：`vector_repair_queue` 会记录实体、操作、失败原因和尝试次数；任务仍不会自动在后台无限重试。
 - checkpoint 只包含 Agent 运行状态，不能完整替代感知、状态快照、检索引用、行动和观察组成的经历切片。
 
 ### 处理要求
 
-- 继续完善追加式、不可变的经历存储验收，并补齐 SQLite/Chroma 存储修复机制。账本当前只负责记录和查询，不自动重跑任务。
+- 继续完善追加式、不可变的经历存储验收。向量修复可由 `memory.store_manager.repair_pending_vectors()` 显式触发；修复时重新读取 SQLite 当前实体，不使用旧快照覆盖权威事实。
 - 至少保存 `slice_id`、`event_id`、事件时间、感知来源、理解结果、检索引用、`action_id`、`observation_id`、状态快照和完成时间。
 - 原始经历不得被摘要覆盖；更正应通过新记录或明确版本关系表达。
 - 写入必须使用稳定 id 幂等，避免重启或重试制造重复经历。
 - 认知实体只需暴露创建时间和最近提及时间作为回忆线索；具体回忆由工具按时间范围读取多条 ExperienceSlice。不要把单个时间戳当成某条经历的唯一身份。
 
+### SQLite/Chroma 不一致的当前行为
+
+```text
+SQLite 写入成功
+-> Chroma 同步失败
+-> 写入 vector_repair_queue
+-> 原始错误继续向 CommitWorker 报告为 commit_failed
+```
+
+这表示“结构化认知已经保存，但检索索引暂时不可用”，不是完整提交成功。后续显式调用修复函数后，任务才会进入 `repaired`。
+
 ### 验收条件
 
 - 进程重启后能够按 id、时间范围和线程读取完整 ExperienceSlice。
+- 同一 `thread_id` 的新进程会从 SQLite 中已有的最大 `event_sequence` 之后继续取号；`event_id` 仍是每个事件的永久唯一身份。
 - 同一事件重复提交不会产生两份原始经历。
 - 摘要、人格证据和认知候选都能保存并校验来源 slice id。
 
-## P1：事件时间已保存，但主 Agent 不能稳定看见
+## P1：事件时间已保存，并已完成模型输入渲染
 
 ### 已确认事实
 
@@ -99,6 +121,12 @@ Step 6 有序写入稳定
 - 普通用户消息的可见 `content` 仍只有用户原话，因此模型不一定能读取 `additional_kwargs` 中的时间。
 - 把系统时间直接追加进 `PerceptionEvent.content` 会污染原始事实，并在调用方传入 `occurred_at` 时产生两个不同时间。
 
+### 当前实现
+
+- `core/model_io.py` 的 `render_perception_times_for_model()` 只创建模型请求用的临时消息副本。
+- `core/agent_factory.py` 的 `render_event_times` middleware 在模型调用前统一应用渲染。
+- `tests/test_model_io.py` 已验证旧 checkpoint 消息、当前事件和原始消息不变。
+
 ### 处理要求
 
 - `content` 继续只保存原始感知内容。
@@ -106,12 +134,14 @@ Step 6 有序写入稳定
 - 临时渲染不得写回 checkpoint 或 ExperienceSlice。
 - 时间格式必须统一；未来如改为带时区时间，应统一迁移事件、行动和切片时间，不能只改一个字段。
 
-### 验收条件
+### 已完成验收
 
 - Agent 能区分“几分钟前”“昨天”和长时间中断。
 - checkpoint 中用户原始 `content` 保持不变。
 - 旧 checkpoint 中已经带 `perception_event` 元数据的消息也能被正确渲染。
 - 显式传入的 `occurred_at` 是唯一权威时间，不会被当前系统时间覆盖。
+
+后续仍需在真实长对话中观察“几分钟前/昨天/长时间中断”的表达质量，但这属于模型表现验收，不再是消息时间没有进入模型输入的代码缺口。
 
 ## P1：缺少多时间尺度情景记忆
 

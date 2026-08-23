@@ -10,7 +10,6 @@ from langchain_openai import ChatOpenAI
 from langchain.agents import create_agent
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langchain.agents.middleware import (
-    SummarizationMiddleware,
     dynamic_prompt,
     wrap_model_call,
 )
@@ -26,8 +25,12 @@ from config import (
     UNDERSTANDING_LLM_TIMEOUT_SECONDS,
     UNDERSTANDING_LLM_TEMPERATURE,
     CHECKPOINT_DB_PATH,
-    UNDERSTANDING_LLM_MAX_TOKENS
+    UNDERSTANDING_LLM_MAX_TOKENS,
+    WORKING_CONTEXT_TRIGGER_MESSAGES,
+    WORKING_CONTEXT_KEEP_MESSAGES,
+    WORKING_CONTEXT_MAX_SNAPSHOT_CHARS,
 )
+from core.working_context import WorkingContextMiddleware
 from persona.loader import load_persona, get_model_config, build_system_prompt
 
 _RUNTIME_INJECTION = {"text": ""}
@@ -174,10 +177,11 @@ def create_agent_from_persona(tools: list = None):
           checkpointer=checkpointer,
           middleware=[
               make_dynamic_prompt(system_prompt),
-              SummarizationMiddleware(
-                  model=llm,
-                  trigger=("tokens", 30000),
-                ),
+              WorkingContextMiddleware(
+                  trigger_messages=WORKING_CONTEXT_TRIGGER_MESSAGES,
+                  keep_messages=WORKING_CONTEXT_KEEP_MESSAGES,
+                  max_snapshot_chars=WORKING_CONTEXT_MAX_SNAPSHOT_CHARS,
+              ),
                render_event_times,
           ],
       )

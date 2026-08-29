@@ -2,7 +2,7 @@
 
 版本：v0.6 执行版
 
-本次更新：Step 6 的进程内有序写入闭环已经完成自动化测试和真实 LLM 开放验收。`ExperienceSlice` 已有第一版不可变 SQLite 持久化；人格反思和多时间尺度情景记忆仍必须等存储验收和查询边界稳定后再启动。
+本次更新：Step 6 的进程内有序写入闭环已经完成自动化测试和真实 LLM 开放验收。`ExperienceSlice` 已有第一版不可变 SQLite 持久化，摘要存储契约已建立；人格反思和多时间尺度情景记忆仍必须等存储验收和查询边界稳定后再启动。
 
 目标：把当前记忆模块重构成稳定、可查询、可查重、可更新的长期认知层，服务于通用“类人 Agent 框架”，而不是服务于某个单一角色。
 
@@ -418,7 +418,9 @@ LangGraph checkpoint 的职责是恢复 Agent 的短期运行状态，不是保�
 3. 后续压缩可能再次总结旧总结，形成有损漂移；派生的关系解释、情绪结论或人格判断可能在循环中逐渐被强化。
 4. checkpoint 中的旧快照即使仍物理存在，也只是运行状态历史，不能作为不可变事件账本或长期记忆主库。
 
-正式的多时间尺度情景记忆必须以逐轮持久化的不可变 `ExperienceSlice` 为原始证据。ExperienceSlice 在每轮行动完成后立即追加保存；片段、每日、周/月摘要都是可重建的派生索引，必须保存时间范围、来源 slice id、生成时间和算法/Prompt 版本，并允许从摘要定位一段按时间顺序排列的原始过程。`MemoryEntity` 只提供创建时间和最近提及时间作为回忆线索，不把时间戳当成单条切片身份。具体问题队列和施工顺序见 `docs/POST_STEP6_KNOWN_ISSUES.md`；这些工作不进入当前 Step 6 范围。
+正式的多时间尺度情景记忆必须以逐轮持久化的不可变 `ExperienceSlice` 为原始证据。ExperienceSlice 在每轮行动完成后立即追加保存；片段、每日、周/月摘要都是可重建的派生索引，必须保存时间范围、来源 slice id、生成时间和算法/Prompt 版本，并允许从摘要定位一段按时间顺序排列的原始过程。`memory/experience_summary_store.py` 已建立摘要存储契约，`memory/experience_summary_builder.py` 已提供不调用 LLM 的片段/每日稳定生成器；自动调度和周/月反思仍未接入。`MemoryEntity` 只提供创建时间和最近提及时间作为回忆线索，不把时间戳当成单条切片身份。具体问题队列和施工顺序见 `docs/POST_STEP6_KNOWN_ISSUES.md`；这些工作不进入当前 Step 6 范围。
+
+未来主 Agent 的上下文组合顺序为：当前事件、按相关性筛选出的长期/年度/月度/周度摘要、最近十几轮详细经历。摘要只负责快速定位，具体过程仍从原始 ExperienceSlice 读取；不能把所有时间尺度的摘要无条件拼成一份新的无限增长上下文。
 
 #### 最终一致的 ExperienceAppraisal 契约
 
@@ -928,7 +930,7 @@ Phase 0 的事实写入与认知情绪印记写入分开处理：事实候选由
 - 自动化契约与集成测试已覆盖有序水位、失败推进、进程内幂等、方向规范化、same 情绪转换、related 建边和提交时情绪重算；当前完整测试为 `124/124` 通过。
 - 每轮无冲击时的基线回归已接入：`emotion.appraisal_rules.compute_committed_mood_change` 只在 `mood_impact == 0` 时向基线移动一步，`emotion.manager.commit_mood_effect` 在同一 SQLite 事务中写入最终值。`begin_perception_event` 的离线时间回归仍是另一条独立机制。
 - 真实 LLM 与真实存储开放验收已完成：`create/update/reinforce`、已有认知情绪更新、`related` 创建独立实体并写入一跳关系、正负 mood 冲击、零冲击基线回归、跨重启召回和退出排空均已实际到达；一次验收中的 6 个任务按事件序号全部进入 `committed`，没有 `commit_failed`。
-- Step 6 到此收口。不可变 ExperienceSlice 存储和跨进程提交账本已有第一版；SQLite/Chroma 修复队列、情景摘要和人格演化仍转入后续施工。
+- Step 6 到此收口。不可变 ExperienceSlice 存储和跨进程提交账本已有第一版；SQLite/Chroma 修复队列、摘要存储和无 LLM 的片段/每日摘要生成器已转入后续施工，自动调度、只读经历查询和人格演化仍未完成。
 
 任务：
 

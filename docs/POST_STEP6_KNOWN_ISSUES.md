@@ -76,7 +76,7 @@ Step 6 有序写入稳定
 - 多次压缩不会把未经证实的关系或情绪推断升级为事实。
 - 有测试证明压缩只改变工作上下文，不改变原始 ExperienceSlice。
 
-第一版对应测试：`tests/test_working_context.py`。长期情景摘要仍未实现，不得把本版工作快照称为日/周/月记忆。
+第一版对应测试：`tests/test_working_context.py`。工作快照仍不是长期情景摘要；摘要生成器对应 `tests/test_experience_summary_builder.py`，不能把它误称为已经完成的日/周/月自动记忆。
 
 ## P0：ExperienceSlice 持久提交链尚未完全稳定
 
@@ -160,9 +160,20 @@ MemoryEntity 的 `created_at` 和 `last_mentioned_at` 只负责告诉 Agent “�
 ### 处理要求
 
 - 每份摘要保存覆盖时间、来源 slice id、生成时间、Prompt/算法版本和不确定性。
+- `memory/experience_summary_store.py` 已提供 `experience_summaries` 表和追加式保存/读取；`memory/experience_summary_builder.py` 已提供不调用 LLM 的片段/每日稳定生成器。当前仍没有按天自动调度，也不负责周/月反思。
 - 周/月反思不能只对旧摘要继续做无来源的“总结的总结”；至少要能回查并抽样核对原始证据。
 - 关系变化、人格变化和情绪印记不能因为摘要措辞而直接更新，仍要经过各自证据链和提交规则。
 - 启动时注入近期详细经历和有限的派生摘要；长期细节按相关性检索，不注入一份不断膨胀的全生命周期总摘要。
+
+### 约定的上下文组合顺序
+
+```text
+当前事件
+-> 相关的长期/年度/月度/周度摘要
+-> 最近十几轮详细经历
+```
+
+摘要不会每轮全部注入，而是先按当前事件筛选；如果需要具体过程，再按摘要指向的时间范围读取多条 ExperienceSlice。
 
 ### 验收条件
 

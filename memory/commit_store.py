@@ -169,6 +169,9 @@ def record_appraisal_terminal(job: dict[str, Any]) -> None:
 
 
 def mark_commit_started(job_id: str) -> None:
+    """
+    账本标记开始提交
+    """
     ensure_commit_ledger()
     with _connect() as conn:
         conn.execute(
@@ -185,6 +188,7 @@ def mark_commit_terminal(
     result: dict[str, Any] | None = None,
     error: str | None = None,
 ) -> None:
+    """账本标记提交进入终态"""
     if status not in {"committed", "commit_failed"}:
         raise ValueError("无效的提交终态")
     ensure_commit_ledger()
@@ -198,7 +202,7 @@ def mark_commit_terminal(
 
 
 def list_unfinished_commits() -> list[dict[str, Any]]:
-    """读取尚未进入提交终态的账本记录；本阶段只查看，不自动重跑。"""
+    """查看账本中:读取尚未进入提交终态的账本记录；本阶段只查看，不自动重跑。"""
     ensure_commit_ledger()
     with _connect() as conn:
         rows = conn.execute(

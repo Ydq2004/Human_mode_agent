@@ -134,6 +134,13 @@ class MainAppraisalIntegrationTests(unittest.TestCase):
         self.assertFalse(
             memory_control["result_available_during_response"]
         )
+        self.assertTrue(
+            snapshot["memory_access"]["deliberate_recall"]["available"]
+        )
+        self.assertEqual(
+            snapshot["memory_access"]["deliberate_recall"]["tool"],
+            "recall_memory",
+        )
 
     @patch("main.build_agent_context")
     @patch("main.begin_perception_event")

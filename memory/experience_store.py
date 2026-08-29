@@ -313,3 +313,61 @@ def list_experience_slices(
             (*params, limit),
         ).fetchall()
     return [_row_to_stored(row) for row in rows]
+
+
+def search_experience_slices(
+    *,
+    keyword: str | None = None,
+    slice_id: str | None = None,
+    start_at: str | None = None,
+    end_at: str | None = None,
+    thread_id: str | None = None,
+    limit: int = 20,
+) -> list[StoredExperienceSlice]:
+    """按关键词、时间、线程或切片 id 读取经历。
+
+    这是只读回忆工具使用的底层查询。关键词暂时在保存的 JSON 中匹配，
+    因此会覆盖原始事件、Agent 行动和观察；权威内容仍由 JSON 中的
+    ExperienceSlice 恢复，不会从摘要或模型回答重新拼造。
+    """
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+        raise ValueError("limit 必须是 1 到 100 的整数")
+
+    clauses = []
+    params: list[Any] = []
+    if keyword is not None and str(keyword).strip():
+        # 把用户输入当普通文字，而不是 LIKE 的 % / _ 通配符。
+        literal = (
+            str(keyword).strip()
+            .replace("\\", "\\\\")
+            .replace("%", "\\%")
+            .replace("_", "\\_")
+        )
+        clauses.append("payload_json LIKE ? ESCAPE '\\'")
+        params.append(f"%{literal}%")
+    if slice_id is not None and str(slice_id).strip():
+        clauses.append("slice_id = ?")
+        params.append(str(slice_id).strip())
+    if start_at is not None:
+        clauses.append("occurred_at >= ?")
+        params.append(str(start_at))
+    if end_at is not None:
+        clauses.append("occurred_at <= ?")
+        params.append(str(end_at))
+    if thread_id is not None and str(thread_id).strip():
+        clauses.append("thread_id = ?")
+        params.append(str(thread_id).strip())
+
+    if not clauses:
+        raise ValueError("至少提供 keyword、slice_id、时间范围或 thread_id 之一")
+
+    where = f"WHERE {' AND '.join(clauses)}"
+    ensure_experience_store()
+    with _connect() as conn:
+        rows = conn.execute(
+            f"SELECT * FROM experience_slices {where} "
+            "ORDER BY occurred_at ASC, event_sequence ASC, slice_id ASC "
+            "LIMIT ?",
+            (*params, limit),
+        ).fetchall()
+    return [_row_to_stored(row) for row in rows]

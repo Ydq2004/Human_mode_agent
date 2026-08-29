@@ -160,7 +160,7 @@ MemoryEntity 的 `created_at` 和 `last_mentioned_at` 只负责告诉 Agent “�
 ### 处理要求
 
 - 每份摘要保存覆盖时间、来源 slice id、生成时间、Prompt/算法版本和不确定性。
-- `memory/experience_summary_store.py` 已提供 `experience_summaries` 表和追加式保存/读取；`memory/experience_summary_builder.py` 已提供不调用 LLM 的片段/每日稳定生成器。当前仍没有按天自动调度，也不负责周/月反思。
+- `memory/experience_summary_store.py` 已提供 `experience_summaries` 表和追加式保存/读取；`memory/experience_summary_builder.py` 已提供不调用 LLM 的片段/每日稳定生成器；`memory/experience_summary_pipeline.py` 的 `generate_daily_summary(day)` 可以按日期读取、生成并幂等保存 daily 摘要。当前仍没有定时调度，也不负责周/月反思。
 - 周/月反思不能只对旧摘要继续做无来源的“总结的总结”；至少要能回查并抽样核对原始证据。
 - 关系变化、人格变化和情绪印记不能因为摘要措辞而直接更新，仍要经过各自证据链和提交规则。
 - 启动时注入近期详细经历和有限的派生摘要；长期细节按相关性检索，不注入一份不断膨胀的全生命周期总摘要。
@@ -181,11 +181,11 @@ MemoryEntity 的 `created_at` 和 `last_mentioned_at` 只负责告诉 Agent “�
 - 删除并重建派生摘要不会改变原始经历和权威认知。
 - 更换 Persona 后，同一原始事件仍保持不变，新的解释不会反写旧事实。
 
-## P1：缺少只读经历查询工具
+## P1：只读经历查询工具（第一版已完成）
 
 ### 目标
 
-主 Agent 平时只接收短期详细上下文和相关摘要；当用户提到某段往事时，可以先查摘要，再按时间范围读取当时的一组具体经历。
+主 Agent 平时只接收短期详细上下文和相关摘要；当用户提到某段往事时，可以调用 `recall_memory`，先查长期认知/摘要，再按时间范围读取当时的一组具体经历。
 
 ### 边界
 
@@ -194,11 +194,22 @@ MemoryEntity 的 `created_at` 和 `last_mentioned_at` 只负责告诉 Agent “�
 - 第一阶段只做“搜索经历”和“读取经历详情”，不加入自动遗忘、改写或复杂多跳推理。
 - 工具结果作为新的感知事件进入主循环，而不是偷偷写进 System Prompt。
 
+### 当前实现
+
+- `memory/recall_tools.py` 注册只读 `recall_memory` 工具，同时返回 `memories`、`summaries` 和 `experiences` 三个区域。
+- 认知查询复用 `memory/retrieval_engine.retrieve_memories()`；`concept_id` 走 SQLite 精确读取。
+- 经历查询支持关键词、`start_at`、`end_at`、`thread_id` 和 `concept_id`。关键词第一版在 `experience_slices.payload_json` 中匹配，覆盖原始事件、Agent 行动和观察，结果最多 50 条。
+- 摘要目前按时间范围读取，再在摘要文字中做关键词筛选；摘要只用于导航，完整过程仍从 ExperienceSlice 读取。
+- 主 Agent 的工具调用和工具返回分别记录为 `AgentAction(tool_call)` 与 `PerceptionEvent(source=tool, modality=memory_recall_result)`，随本轮 ExperienceSlice 保存。
+- 查询不会写入 MemoryEntity、不会修改 mood，也不会改变 ExperienceSlice；无结果返回 `result_status=no_match`。
+
 ### 验收条件
 
 - 能按时间范围、关键词和相关认知线索查询，并能按 slice id 做开发调试定位。
 - 摘要命中后能按时间范围读取对应的一组原始事件、Agent 回应和观察。
 - 无结果时明确返回未知，不由模型补写一段似是而非的回忆。
+
+第一版实现与测试：`memory/recall_tools.py`、`tests/test_recall_tools.py`。当前关键词匹配是稳定的文字匹配，不等同于语义相似；后续可增加全文索引或语义候选，但仍需保留 SQLite/ExperienceSlice 的来源边界。
 
 ## P2：Card_slot 混合了角色层与实例层
 

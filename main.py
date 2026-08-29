@@ -45,6 +45,7 @@ from memory.experience_store import (
     get_next_event_sequence,
     save_experience_slice,
 )
+from memory.recall_tools import recall_memory
 from memory import commit_store
 
 
@@ -187,12 +188,68 @@ def _build_capability_snapshot(tools: list | None) -> dict:
                 "available": True,
                 "exhaustive": False,
             },
-            # 主动回忆工具尚未接入，Agent 不能声称自己已经主动查过。
+            # 这是只读回忆工具；写入、修改和删除仍由后台框架负责。
             "deliberate_recall": {
-                "available": False,
+                "available": True,
+                "tool": "recall_memory",
             },
         },
     }
+
+
+def _extract_tool_interactions(messages: list) -> tuple[list, list[PerceptionEvent]]:
+    """把本轮 Agent 的工具调用和工具结果转成可追溯经历记录。
+
+    LangChain 会把工具调用放在 AIMessage.tool_calls，把返回值放在
+    ToolMessage.content。这里不改变模型消息，只为 ExperienceSlice 复制
+    一份记录；工具结果仍然只是观察，不会自动变成长期认知。
+    """
+    actions = []
+    observations = []
+
+    for message in messages or []:
+        tool_calls = getattr(message, "tool_calls", None) or []
+        for call in tool_calls:
+            if not isinstance(call, dict):
+                continue
+            call_name = str(call.get("name") or "tool").strip()
+            call_payload = {
+                "name": call_name,
+                "args": call.get("args") or {},
+                "tool_call_id": call.get("id") or call.get("tool_call_id"),
+            }
+            actions.append(
+                create_agent_action(
+                    "tool_call",
+                    json.dumps(call_payload, ensure_ascii=False, default=str),
+                    metadata={"tool_name": call_name},
+                )
+            )
+
+        if getattr(message, "type", "") != "tool":
+            continue
+        content = getattr(message, "content", "")
+        if isinstance(content, str):
+            rendered = content.strip()
+        else:
+            rendered = json.dumps(content, ensure_ascii=False, default=str)
+        if not rendered:
+            rendered = "工具返回空结果"
+        observations.append(
+            create_perception_event(
+                source="tool",
+                modality="memory_recall_result",
+                content=rendered,
+                metadata={
+                    "tool_name": str(getattr(message, "name", "") or ""),
+                    "tool_call_id": str(
+                        getattr(message, "tool_call_id", "") or ""
+                    ),
+                },
+            )
+        )
+
+    return actions, observations
 
 def _build_perception_frame(
     event: PerceptionEvent,
@@ -377,10 +434,11 @@ def process_perception_event(
         content=visible_reply,
     )
 
-    # 当前版本没有注册旧工具，因此没有工具观察。
-    # 未来工具返回值必须先包装成新的 PerceptionEvent，
-    # 再放入 observations，而不能直接塞进 response_or_actions。
-    observations = []
+    # 工具调用和返回值是本轮真实发生的运行记录，保存为行动/观察，
+    # 这样以后能知道 Agent 是否查过某段经历，而不是只看它的文字。
+    tool_actions, observations = _extract_tool_interactions(
+        result.get("messages", [])
+    )
 
     experience_slice = create_experience_slice(
         perception_event=event,
@@ -392,7 +450,7 @@ def process_perception_event(
             context_result.get("activated_memory_refs")
             or []
         ),
-        response_or_actions=[visible_action],
+        response_or_actions=[visible_action, *tool_actions],
         observations=observations,
         state_snapshot=frame.state_snapshot,
         capability_snapshot=frame.capability_snapshot,
@@ -663,9 +721,9 @@ def main():
     # 不再调用旧的 Chroma-only genesis memory。
     ensure_memory_store()
 
-    # Step 5 无写入闭环暂时不注册旧记忆工具。
-    # 否则 Agent 可能绕过 Step 6 直接写入旧路径。
-    tools = []
+    # 只注册只读回忆工具。长期认知的创建、更新和删除仍只能由 Step 6
+    # 的后台提交链执行，Agent 不能通过工具绕过身份裁决直接写库。
+    tools = [recall_memory]
     capability_snapshot = _build_capability_snapshot(tools)
 
     (

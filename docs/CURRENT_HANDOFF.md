@@ -91,7 +91,7 @@ PerceptionEvent
 
 当前仍未完成：
 
-- ExperienceSlice 的第一版追加存储和跨进程读取已完成；提交账本、SQLite/Chroma 存储修复队列、摘要存储契约和无 LLM 的片段/每日摘要生成器已完成；自动调度、周/月摘要生成和只读回忆工具仍未完成。
+- ExperienceSlice 的第一版追加存储和跨进程读取已完成；提交账本、SQLite/Chroma 存储修复队列、摘要存储契约、无 LLM 的片段/每日摘要生成器、按日期显式生成流程和只读 `recall_memory` 工具已完成；自动调度、周/月摘要生成仍未完成。
 
 已补齐：
 
@@ -154,7 +154,7 @@ Step 6：
 12. `PerceptionUnderstanding` 的正式输出收缩为 `understanding_status`、`situated_understanding`、`memory_activation_cues`、`capability_constraints`、`uncertainties`。其中 `understanding_status` 由代码产生；原始事实已经由 `PerceptionEvent` 保存，不得再次生成冗长事实复述、注意力用途枚举或下一步回复建议。
 13. 自动认知唤起不只服务“用户主动询问过去”。只要既有个人认知可能实质改变本轮理解、回应、行动、情绪评价或后续身份裁决，就应生成 `memory_activation_cues`；普通通用知识和仅靠当前上下文即可处理的事件仍返回空数组。
 14. 主 Agent 的 System Prompt 保存稳定使用规则：当前 Phase 0 由 Persona 提供长期表达基线，mood 调节短时耐心、主动性和表达幅度，认知情绪印记只影响直接相关对象；三者按作用域并行生效，不做“有认知就忽略 mood”的瀑布回退。当前明确证据优先于可能过时的记忆。每回合动态注入只提供真实状态、被唤起认知和当前能力。
-15. 长期认知由后台框架评价、裁决和提交，不是主 Agent 可直接操作的工具。主 Agent 在回复时不知道候选最终会被写入、合并还是驳回，因此不逐条请示是否保存，也不能声称已经保存、更新或删除；用户明确的“不记住/仅临时”要求必须作为事件证据保留。
+15. 长期认知的创建、修改和删除由后台框架评价、裁决和提交，主 Agent 不能直接操作这些副作用；主 Agent 可以调用只读 `recall_memory` 查询已有认知和经历。主 Agent 在回复时不知道候选最终会被写入、合并还是驳回，因此不逐条请示是否保存，也不能声称已经保存、更新或删除；用户明确的“不记住/仅临时”要求必须作为事件证据保留。
 16. `event_relevance=high` 必须由已确认的重大影响支撑，并点明受到影响的关系、目标、边界/自主性、安全或关键任务。不能仅凭未确认的可能含义判 high；原因未知但重大影响本身已经确认时仍可判 high。
 17. `persona_effect` 以 `neutral` 为默认。只有候选内容本身直接触碰 Persona 声明的目标、价值、边界或关系期待时，才能在有证据的情况下判为 `fitting/conflicting`；“记住它有助于服务”不构成 fitting。
 18. `label_update.label` 的隐含主体必须是 Agent，只描述对该认知的主观态度，不复述 `concept_name` 或事实摘要；没有可靠、独特的主观态度时使用 `null`。代码继续校验极性、强度、空值和完全复制，不能假装能机械理解全部中文情绪语义；语义质量由真实 LLM 回归测试保障。
@@ -182,7 +182,7 @@ Agent 明确发起只读查询 -> 搜索当前整合认知和情景摘要
 3. `memory.retrieval_engine` 继续作为共享底层检索能力；当前 `context_builder` 使用它实现自动唤起，未来只读回忆工具也可复用，但两者的预算、查询范围和结果语义不能混为一谈。
 4. Agent 可以把“本轮自然想起了什么”“这一刻没有自然想起什么”作为自身经历诚实表达；只有实际执行主动回忆后，才可以说“我查过”。即使主动查询无结果，也只能陈述本次查询范围内未找到可靠记录。
 5. AgentAction 是“Agent 实际说了或做了什么”的一手证据。Agent 关于主观体验的自述可以作为第一人称证据；关于认知访问、工具调用、数据库写入、设备动作和其他副作用的自述，必须与 `capability_snapshot`、`memory_activation_state`、真实 observations 或成功提交结果一致。
-6. 当前主 Agent 生成回复时看不到后台 appraisal/commit 的最终结果，因此可以说“收到、理解”，不能说“已经记住、保存、更新或删除”。这不是语气限制，而是运行时真值边界。
+6. 当前主 Agent 生成回复时看不到后台 appraisal/commit 的最终结果，因此可以说“收到、理解”，不能说“已经记住、保存、更新或删除”。它可以调用只读 `recall_memory` 查询已有认知和经历，但不能通过工具写入。这不是语气限制，而是运行时真值边界。
 7. 具体互动事件与由该事件体现出的稳定偏好、关系或互动模式可以是 `related`，但不是同一个认知身份。跨 `memory_type` 的候选不得只因主体和主题相同被判为 `same`。
 
 `ExperienceSlice` 必须保存当时的 `capability_snapshot`、`memory_activation_state` 和 `activated_memory_refs`。这样后台评价可以区分“Agent 当时自然想起了什么”“Agent 当时具有什么能力”以及“Agent 只是说了什么”，而不是从自然语言倒推系统状态。

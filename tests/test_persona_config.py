@@ -42,6 +42,8 @@ class PersonaConfigTests(unittest.TestCase):
         self.assertIn("最后才是角色卡允许领域内的通用训练知识", prompt)
         self.assertIn("已记录", prompt)
         self.assertIn("禁止使用这些说法", prompt)
+        self.assertIn("recall_memory", prompt)
+        self.assertIn("只读工具", prompt)
 
     def test_persona_uses_source_aware_outside_domain_rule(self):
         persona = load_persona()

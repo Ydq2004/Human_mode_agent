@@ -377,3 +377,30 @@ ExperienceSlice 完整记录：
 ## 继续时的提醒
 
 当前最大风险不是缺少更多 prompt，而是把新认知身份、情绪印记、Persona 解释和旧 Chroma-only 副作用再次混在一起。每完成一个小闭环，都要先看结构化输出、数据库变化和状态时序，再进入下一步。
+
+## 2026-08-30 后续施工计划（覆盖较早的临时顺序）
+
+### 阶段 2：跨进程提交账本恢复（P0）
+
+当前 `commit_ledger` 只在 appraisal 进入终态后写入记录，因此不能把账本中不存在的
+`appraisal_status=pending` 任务假装恢复。第一步只恢复已有可靠结果：
+
+当前进度：**2.1 已完成，2.2 尚未开始**。`commit_store` 已提供可恢复候选查询和明确的
+`abandoned` 收口接口；自动重投仍需先补齐任务输入和事件顺序恢复协议。
+
+- `appraisal_status=completed` 且 `commit_status=waiting`：重新交给 `CommitWorker`，提交函数必须保持幂等。
+- `commit_status=committing`：启动时先根据结构化主库检查是否已经产生写入，再决定继续提交或标记为 `abandoned`。
+- `appraisal_status=failed`：只有能从 `ExperienceSlice` 和保存的角色/状态快照重建完整评价输入时才允许重评；否则标记 `abandoned` 并保留原因。
+
+后续若要恢复真正的 pending appraisal，必须先扩展账本保存任务输入或可重建引用，不能只保存一个 job id。
+同时提供只读检查和人工修复入口；超过保留时间的任务只做明确的 `abandoned` 归档，不静默删除。
+
+### 阶段 3：SQLite/Chroma 一致性修复增强（P0）
+
+- SQLite 仍是唯一事实来源；SQLite 中有而 Chroma 缺失的实体进入有界重试队列。
+- Chroma 中有而 SQLite 缺失的记录只标记为孤立索引并报告，不自动删除事实或索引。
+- 自动修复必须有最大尝试次数、失败原因和下一次可重试时间，禁止无限重试。
+
+### 阶段 4：情景摘要可靠性（P1）
+
+周/月摘要已经直接读取原始 `ExperienceSlice`，不再重复总结旧摘要。后续只补充摘要生成失败的有限重试、失败记录和测试；暂不把周期摘要生成器改成 LLM。

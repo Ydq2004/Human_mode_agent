@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -202,11 +202,99 @@ def mark_commit_terminal(
 
 
 def list_unfinished_commits() -> list[dict[str, Any]]:
-    """查看账本中:读取尚未进入提交终态的账本记录；本阶段只查看，不自动重跑。"""
+    """读取尚未进入提交终态的账本记录。"""
     ensure_commit_ledger()
     with _connect() as conn:
         rows = conn.execute(
             "SELECT * FROM commit_ledger WHERE commit_status NOT IN "
-            "('committed', 'commit_failed') ORDER BY event_sequence"
+            "('committed', 'commit_failed', 'abandoned') ORDER BY event_sequence"
         ).fetchall()
-    return [dict(row) for row in rows]
+    return [_decode_ledger_row(row) for row in rows]
+
+
+def _decode_ledger_row(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    """把账本 JSON 字段恢复成 Python 对象，供恢复工具和调度器使用。"""
+    item = dict(row)
+    for key in ("appraisal_json", "effects_json", "commit_result_json"):
+        raw = item.get(key)
+        if raw is None:
+            item[key] = None
+            continue
+        try:
+            item[key] = json.loads(raw)
+        except (TypeError, json.JSONDecodeError):
+            item[key] = None
+    return item
+
+
+def list_recoverable_commits(
+    *,
+    thread_id: str | None = None,
+    max_age_hours: float | None = 24.0,
+    now: datetime | None = None,
+) -> list[dict[str, Any]]:
+    """读取可以进入人工/自动恢复评估的提交任务。
+
+    这里只返回“评价已完成、提交仍等待”的记录；真正的 pending appraisal
+    目前没有完整的持久输入，不能被本函数伪装成可恢复任务。超过保留时间
+    的记录也不自动重跑，调用方可以用 ``mark_commit_abandoned`` 收口。
+    """
+    if max_age_hours is not None and (
+        isinstance(max_age_hours, bool)
+        or not isinstance(max_age_hours, (int, float))
+        or max_age_hours < 0
+    ):
+        raise ValueError("max_age_hours 必须是非负数字或 None")
+
+    ensure_commit_ledger()
+    clauses = [
+        "appraisal_status = ?",
+        "commit_status = ?",
+    ]
+    params: list[Any] = ["completed", "waiting"]
+    if thread_id is not None and str(thread_id).strip():
+        clauses.append("thread_id = ?")
+        params.append(str(thread_id).strip())
+
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM commit_ledger WHERE "
+            + " AND ".join(clauses)
+            + " ORDER BY event_sequence, submitted_at, job_id",
+            params,
+        ).fetchall()
+
+    decoded = [_decode_ledger_row(row) for row in rows]
+    if max_age_hours is None:
+        return decoded
+
+    reference = now or datetime.now()
+    cutoff = reference - timedelta(hours=float(max_age_hours))
+    output = []
+    for item in decoded:
+        try:
+            submitted_at = datetime.fromisoformat(str(item["submitted_at"]))
+        except (KeyError, TypeError, ValueError):
+            # 时间损坏时不自动恢复，交给人工处理，避免错误任务被误重放。
+            continue
+        if submitted_at >= cutoff:
+            output.append(item)
+    return output
+
+
+def mark_commit_abandoned(job_id: str, reason: str) -> bool:
+    """明确关闭无法安全恢复的任务，保留原因，不删除账本记录。"""
+    job_id = str(job_id or "").strip()
+    reason = str(reason or "").strip()
+    if not job_id or not reason:
+        raise ValueError("job_id 和 reason 不能为空")
+
+    ensure_commit_ledger()
+    with _connect() as conn:
+        cursor = conn.execute(
+            "UPDATE commit_ledger SET commit_status = ?, error = ?, "
+            "commit_completed_at = ? WHERE job_id = ? AND commit_status "
+            "NOT IN ('committed', 'commit_failed', 'abandoned')",
+            ("abandoned", reason, _now(), job_id),
+        )
+    return cursor.rowcount > 0

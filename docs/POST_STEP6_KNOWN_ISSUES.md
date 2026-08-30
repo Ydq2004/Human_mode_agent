@@ -267,3 +267,32 @@ MemoryEntity 的 `created_at` 和 `last_mentioned_at` 只负责告诉 Agent “�
 - Step 6 自身的 resolver/judge/store、有序提交、mood 提交、SQLite/Chroma 同步和 `same` 情绪信号转换，继续以 `docs/Phase0_Memory_Architecture_Redesign.md` 为准。
 - 人格演化继续以 `personality_seed -> trait_evidence -> PersonalitySnapshot -> 派生文本` 为准；它依赖 ExperienceSlice 持久化，不与情景记忆抢先施工。
 - 已经修复并通过测试的问题不放入本清单，避免把历史故障误当成当前待办。
+
+## 2026-08-30 后续施工计划（最新）
+
+### 阶段 2：跨进程提交账本恢复（P0）
+
+当前账本由 `record_appraisal_terminal()` 在 appraisal 完成或失败后写入，尚未记录真正的 pending appraisal。
+因此不能直接把所有“未完成”任务重跑。
+
+当前进度：**2.1 已完成，2.2 尚未开始**。已经加入可恢复候选查询和明确的 `abandoned` 标记工具；
+自动重投需要等任务输入和事件顺序恢复协议补齐后再接入。
+
+施工边界：
+
+1. 已完成 appraisal、但 `commit_status=waiting` 的记录，只恢复到 `CommitWorker`。
+2. `commit_status=committing` 的记录，启动时先核对结构化主库，再决定继续提交或标记 `abandoned`。
+3. `appraisal_status=failed` 只有在能从 ExperienceSlice 和保存快照重建完整输入时才重评，否则人工处理并标记 `abandoned`。
+4. 真正恢复 pending appraisal 前，必须先保存可重建的任务输入；不能凭 job id 猜测。
+5. 增加手动查看、重试和 abandoned 标记入口，所有操作保留原因和时间。
+
+### 阶段 3：SQLite/Chroma 一致性修复增强（P0）
+
+1. 增加 Chroma 孤立索引检测，但不自动删除 Chroma 记录。
+2. SQLite 仍是唯一事实来源，修复时重新读取 SQLite 当前实体。
+3. 增加最大重试次数、失败时间和下一次重试时间，禁止无限重试。
+4. 自动调度采用有限批次；修复失败不能阻塞主 Agent。
+
+### 阶段 4：情景摘要可靠性（P1）
+
+周/月摘要直接读取原始 ExperienceSlice 的要求已经完成。后续只增加摘要生成失败的有限重试、失败记录和对应测试；周期摘要暂不改为 LLM 总结。

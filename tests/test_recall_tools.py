@@ -2,6 +2,7 @@ import json
 import sys
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 
@@ -112,6 +113,22 @@ class RecallToolTests(unittest.TestCase):
         self.assertEqual(first_ten[-1]["recall_call"]["count"], 10)
         self.assertEqual(eleventh["result_status"], "call_limit_reached")
         self.assertEqual(eleventh["recall_call"]["count"], 10)
+
+    def test_recall_budget_is_shared_by_parallel_tool_calls(self):
+        def invoke_once(index):
+            return json.loads(
+                recall_tools.recall_memory.invoke({"query": f"并发查询-{index}"})
+            )
+
+        with recall_tools.recall_call_budget(max_calls=10):
+            with ThreadPoolExecutor(max_workers=20) as executor:
+                outputs = list(executor.map(invoke_once, range(20)))
+
+        allowed = [item for item in outputs if item["recall_call"]["status"] == "allowed"]
+        limited = [item for item in outputs if item["result_status"] == "call_limit_reached"]
+        self.assertEqual(len(allowed), 10)
+        self.assertEqual(len(limited), 10)
+        self.assertEqual(sorted(item["recall_call"]["count"] for item in allowed), list(range(1, 11)))
 
     def test_tool_returns_memory_and_experience_without_writing(self):
         with tempfile.TemporaryDirectory() as directory:

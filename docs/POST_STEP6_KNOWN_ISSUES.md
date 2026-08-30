@@ -1,6 +1,6 @@
 # Step 6 完成后待解决问题
 
-更新时间：2026-08-19
+更新时间：2026-08-30
 
 ## 文件用途
 
@@ -65,9 +65,22 @@ Step 6 有序写入稳定
 ### 当前实现
 
 - `core/working_context.py` 的 `WorkingContextMiddleware` 已替代通用 `SummarizationMiddleware`。
-- 当前第一版不调用 LLM，只按消息数裁剪 checkpoint，保留最近消息，并生成带 `source=project_working_context` 的 `SystemMessage`。
-- 这条快照只表示“系统整理过的短期工作上下文”，不等于用户原话、长期认知或 ExperienceSlice。
-- 当前实现不自动重写或删除 ExperienceSlice；后续按 ExperienceSlice 生成片段/每日摘要时，必须继续保留原始切片。
+- 达到阈值后，旧消息会交给独立的工作上下文总结 LLM；结果以带 `source=project_working_context` 的 `SystemMessage` 保存，并和最近消息一起组成新的 checkpoint 工作窗口。
+- 总结 Prompt 只允许保留已确认事实、Agent 行动、工具事实、时间和未确定内容；禁止总结关系、人格或情绪结论。总结失败时回退为带来源的原始记录，不阻塞主 Agent。
+- 当前每轮基础上下文还会由 `core/context_builder.py` 注入最近可用的日、周、月摘要。这些周期摘要直接来自 `ExperienceSlice`，Checkpoint 总结不能替代它们，也不能把它们再次总结。
+- 这两类派生上下文都不自动重写或删除 ExperienceSlice；原始切片仍是长期情景记忆和人格反思的唯一证据来源。
+
+### 真实运行发现的问题
+
+旧版本按消息数量切开时，一次主动回忆可能产生一条带多个 `tool_calls` 的 `AIMessage`，随后才是多条对应的 `ToolMessage`。如果保留窗口从这些结果中间开始，checkpoint 就会留下没有前置 `tool_calls` 的孤立 `ToolMessage`；下一轮发给模型时会被 API 拒绝：`Messages with role 'tool' must be a response to a preceding message with 'tool_calls'`。当前实现已在总结前清理孤立结果，并按完整工具调用组保留最近窗口；仍需真实长对话继续观察。
+
+### 已实施与后续观察
+
+- 裁剪前先识别工具调用组：`AIMessage(tool_calls)` 和它的全部对应 `ToolMessage` 必须作为一个整体保留或一起移除。
+- 保留窗口的起点如果落在工具结果中间，就向前扩展到对应的 `AIMessage`；如果无法找到对应调用，则丢弃该孤立结果，不把它发送给模型。
+- 快照正文可以省略工具返回的长内容，但不能破坏 checkpoint 中的消息配对。完整工具结果仍由 `ExperienceSlice` 保存。
+- 已增加测试覆盖：总结成功、总结失败回退、结果使用 `SystemMessage`、多工具调用组不拆开、孤立工具结果清理、普通用户/助手消息不受影响。
+- 仍需在真实长对话中观察总结延迟、重复总结后的稳定性，以及总结文本是否始终不越权解释关系、人格和情绪。
 
 ### 验收条件
 
@@ -166,8 +179,8 @@ MemoryEntity 的 `created_at` 和 `last_mentioned_at` 只负责告诉 Agent “�
 - 周/月摘要应直接读取对应周期的原始 `ExperienceSlice`，不能只把旧的每日摘要再次总结，避免误差逐层累积。所有周期边界使用实例统一时区，并按自然日、自然周、自然月计算。
 - 周/月反思不能只对旧摘要继续做无来源的“总结的总结”；至少要能回查并抽样核对原始证据。
 - 关系变化、人格变化和情绪印记不能因为摘要措辞而直接更新，仍要经过各自证据链和提交规则。
-- 主 Agent 不自动接收按当前事件筛选出的历史摘要。当前上下文只保留近期详细经历和本轮自然浮现的少量长期认知；长期细节由主 Agent 在确有回忆需要时调用 `recall_memory` 获取，避免每轮增加检索和上下文长度。
-- 单轮主动回忆不能无限循环。`config.py` 中的 `RECALL_MAX_CALLS_PER_TURN=10` 是硬上限；`memory.recall_tools.recall_call_budget()` 在一次 `agent.invoke()` 外建立独立计数，达到上限后返回 `result_status=call_limit_reached`。提示词只负责引导尽快停止，代码层负责最终限制。
+- 主 Agent 每轮会看到最近可用的日、周、月摘要，作为较长时间背景，但不会自动接收按当前事件筛选出的相关摘要。长期细节和具体过程仍由主 Agent 在确有回忆需要时调用 `recall_memory` 获取，避免每轮进行全库检索。
+- 单轮主动回忆不能无限循环。`config.py` 中的 `RECALL_MAX_CALLS_PER_TURN=10` 是硬上限；`memory.recall_tools.recall_call_budget()` 在一次 `agent.invoke()` 外建立共享的线程安全计数器，即使工具并行执行，第 11 次及以后也返回 `result_status=call_limit_reached`。提示词只负责引导尽快停止，代码层负责最终限制。
 - 回忆工具已返回数据覆盖范围，至少包含 MemoryEntity 和 ExperienceSlice 各自的记录数、最早和最晚可查询时间。覆盖范围只描述当前数据库实际存在的记录，不代表完整人生历史，也不能证明范围之外从未发生过事情。
 - 旧经历缺少 ExperienceSlice 的部分不安排补录。后续系统从当前已经持久化的经历开始建立摘要和回忆能力。
 
@@ -175,14 +188,15 @@ MemoryEntity 的 `created_at` 和 `last_mentioned_at` 只负责告诉 Agent “�
 
 ```text
 当前事件
--> 最近十几轮详细经历
+-> 最近几轮详细经历
+-> 最近可用的日/周/月摘要（长期背景）
 -> 本轮自然浮现的少量长期认知
--> （需要时）主 Agent 调用 recall_memory 获取摘要和原始经历
+-> （需要时）主 Agent 调用 recall_memory 获取相关摘要和原始经历
 ```
 
-摘要不会自动注入主 Agent。`recall_memory` 返回的摘要只用于定位；如果需要具体过程，再按摘要指向的时间范围读取多条 ExperienceSlice。普通当前事件不需要调用工具。
+日/周/月摘要会作为背景注入主 Agent，但它们只用于了解大致时间线，不是原始对话。`recall_memory` 返回的摘要仍只用于定位；如果需要具体过程，再按摘要指向的时间范围读取多条 ExperienceSlice。普通当前事件不需要调用工具。
 
-当前测试发现一轮问题可能触发多次探索性查询。单轮最多 10 次的硬限制和可查询时间覆盖范围已经接入；后续开放测试继续观察 Agent 是否能在拿到足够结果后主动停止。
+并行工具调用的 10 次硬限制已通过回归测试：同一预算上下文内只放行前 10 次，后续调用返回 `call_limit_reached`。真实长对话仍需观察 Agent 是否能在拿到足够结果后主动停止。
 
 ### 验收条件
 

@@ -17,6 +17,9 @@ from config import (
     UNDERSTANDING_LLM_TIMEOUT_SECONDS,
     UNDERSTANDING_LLM_MAX_TOKENS,
     UNDERSTANDING_LLM_TEMPERATURE,
+    WORKING_CONTEXT_LLM_TIMEOUT_SECONDS,
+    WORKING_CONTEXT_LLM_TEMPERATURE,
+    WORKING_CONTEXT_LLM_MAX_TOKENS,
 )
 
 
@@ -41,6 +44,7 @@ class AgentFactoryLLMTests(unittest.TestCase):
             sentinel.understanding_llm,
             sentinel.retry_understanding_llm,
             sentinel.appraisal_llm,
+            sentinel.working_context_llm,
         ]
 
         with (
@@ -83,7 +87,7 @@ class AgentFactoryLLMTests(unittest.TestCase):
                 factory,
                 "WorkingContextMiddleware",
                 return_value=sentinel.working_context,
-            ),
+            ) as working_context_middleware,
             patch.object(
                 factory,
                 "create_agent",
@@ -92,7 +96,7 @@ class AgentFactoryLLMTests(unittest.TestCase):
         ):
             result = factory.create_agent_from_persona(tools=[])
 
-        self.assertEqual(len(chat_openai.call_args_list), 4)
+        self.assertEqual(len(chat_openai.call_args_list), 5)
 
         main_call = chat_openai.call_args_list[0]
         self.assertEqual(
@@ -154,12 +158,34 @@ class AgentFactoryLLMTests(unittest.TestCase):
             LLM_MAX_RETRIES,
         )
 
+        working_context_call = chat_openai.call_args_list[4]
+        self.assertEqual(
+            working_context_call.kwargs["temperature"],
+            WORKING_CONTEXT_LLM_TEMPERATURE,
+        )
+        self.assertEqual(
+            working_context_call.kwargs["max_tokens"],
+            WORKING_CONTEXT_LLM_MAX_TOKENS,
+        )
+        self.assertEqual(
+            working_context_call.kwargs["timeout"],
+            WORKING_CONTEXT_LLM_TIMEOUT_SECONDS,
+        )
+        self.assertEqual(
+            working_context_call.kwargs["max_retries"],
+            LLM_MAX_RETRIES,
+        )
+
         self.assertIs(result[4], sentinel.understanding_llm)
         self.assertIs(result[5], sentinel.retry_understanding_llm)
         self.assertIs(result[6], sentinel.appraisal_llm)
 
         middleware = create_agent.call_args.kwargs["middleware"]
         self.assertIn(sentinel.working_context, middleware)
+        self.assertEqual(
+            working_context_middleware.call_args.kwargs["summary_llm"],
+            sentinel.working_context_llm,
+        )
 
 
 if __name__ == "__main__":

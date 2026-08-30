@@ -16,6 +16,54 @@ from memory.retrieval_engine import (
     RetrievalResult,
     retrieve_memories,
 )
+from memory.experience_summary_store import list_summaries
+from config import RECENT_PERIOD_SUMMARY_MAX_CHARS
+
+
+_PERIOD_SUMMARY_LABELS = {
+    "daily": "最近的日摘要",
+    "weekly": "最近的周摘要",
+    "monthly": "最近的月摘要",
+}
+
+
+def _build_recent_period_summary_context() -> str:
+    """读取每种时间尺度最近的一份摘要，作为主 Agent 的长期背景。
+
+    摘要只负责告诉 Agent“过去大致发生过什么、去哪里找原文”；它不会
+    替代本轮自动认知唤起，也不会直接改变 mood、关系或长期认知。
+    """
+    lines = [
+        "【最近的情景摘要背景】",
+        "以下摘要来自已保存的 ExperienceSlice，只用于了解较长时间的背景。",
+        "摘要不是原始对话；需要具体过程时，请调用只读 recall_memory。",
+    ]
+    found = False
+    for summary_type, label in _PERIOD_SUMMARY_LABELS.items():
+        try:
+            summaries = list_summaries(summary_type=summary_type, limit=100)
+        except Exception:
+            # 摘要库异常不能阻塞当前事件；完整事件和自动唤起仍可继续。
+            summaries = []
+        if not summaries:
+            continue
+
+        summary = summaries[-1]
+        text = str(summary.summary_text or "").strip()
+        if len(text) > RECENT_PERIOD_SUMMARY_MAX_CHARS:
+            text = text[:RECENT_PERIOD_SUMMARY_MAX_CHARS].rstrip() + "…"
+        lines.extend(
+            [
+                f"- {label}（{summary.start_at} 至 {summary.end_at}；"
+                f"来源切片数={len(summary.source_slice_ids)}）：",
+                text,
+            ]
+        )
+        found = True
+
+    if not found:
+        lines.append("当前没有可用的日、周或月摘要。")
+    return "\n".join(lines) + "\n\n"
 
 def _merge_retrieval_results(
     results: list[RetrievalResult],
@@ -384,6 +432,7 @@ def build_agent_context(
         "允许领域内的通用训练知识只作最后补充。知识边界不能覆盖或作废已有来源的认知。\n\n"
     )
 
+    recent_period_summary_text = _build_recent_period_summary_context()
 
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -398,6 +447,7 @@ def build_agent_context(
         f"{evidence_priority_text}"
         f"{activation_state_text}"
         f"{memory_context_text}"
+        f"{recent_period_summary_text}"
         f"{knowledge_scope_text}"
     )
 

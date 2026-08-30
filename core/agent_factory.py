@@ -28,7 +28,10 @@ from config import (
     UNDERSTANDING_LLM_MAX_TOKENS,
     WORKING_CONTEXT_TRIGGER_MESSAGES,
     WORKING_CONTEXT_KEEP_MESSAGES,
-    WORKING_CONTEXT_MAX_SNAPSHOT_CHARS,
+    WORKING_CONTEXT_MAX_SUMMARY_CHARS,
+    WORKING_CONTEXT_LLM_TIMEOUT_SECONDS,
+    WORKING_CONTEXT_LLM_TEMPERATURE,
+    WORKING_CONTEXT_LLM_MAX_TOKENS,
 )
 from core.working_context import WorkingContextMiddleware
 from persona.loader import load_persona, get_model_config, build_system_prompt
@@ -159,6 +162,19 @@ def create_agent_from_persona(tools: list = None):
           max_retries=LLM_MAX_RETRIES,
       )
 
+      # 6. 短期工作上下文总结 LLM。
+      # 它只在 checkpoint 过长时整理旧对话，不参与主 Agent 回复、情绪评价
+      # 或长期记忆写入，因此使用独立的低温度和输出上限。
+      working_context_llm = ChatOpenAI(
+          model=model_name,
+          api_key=api_key,
+          base_url=base_url,
+          temperature=WORKING_CONTEXT_LLM_TEMPERATURE,
+          max_tokens=WORKING_CONTEXT_LLM_MAX_TOKENS,
+          timeout=WORKING_CONTEXT_LLM_TIMEOUT_SECONDS,
+          max_retries=LLM_MAX_RETRIES,
+      )
+
       
 
       # 对话持久化
@@ -179,9 +195,10 @@ def create_agent_from_persona(tools: list = None):
           middleware=[
               make_dynamic_prompt(system_prompt),
               WorkingContextMiddleware(
+                  summary_llm=working_context_llm,
                   trigger_messages=WORKING_CONTEXT_TRIGGER_MESSAGES,
                   keep_messages=WORKING_CONTEXT_KEEP_MESSAGES,
-                  max_snapshot_chars=WORKING_CONTEXT_MAX_SNAPSHOT_CHARS,
+                  max_summary_chars=WORKING_CONTEXT_MAX_SUMMARY_CHARS,
               ),
                render_event_times,
           ],

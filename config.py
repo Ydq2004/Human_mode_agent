@@ -187,9 +187,21 @@ UNDERSTANDING_LLM_MAX_TOKENS = 4096
 DEFAULT_THREAD_ID = "project_test_001"
 MAX_RECENT_TURN = 5
 
-# 主 Agent 的活动 checkpoint 达到该消息数后，使用项目自己的无网络整理器。
-# 它只保留最近几条原文，并把更早消息变成带来源标记的系统工作上下文。
-# 调大 trigger：更少整理，但模型请求携带的历史更长；调小则相反。
+# 主 Agent 的活动 checkpoint 达到该消息数后，使用项目自己的 LLM 总结器。
+# 旧消息会先总结成 SystemMessage，再和最近几轮完整消息一起进入新的工作窗口；
+# 这不是长期记忆，ExperienceSlice 才是完整经历的权威保存。
+# 调大 trigger：更少总结，但模型请求携带的历史更长；调小则相反。
 WORKING_CONTEXT_TRIGGER_MESSAGES = 40
 WORKING_CONTEXT_KEEP_MESSAGES = 20
-WORKING_CONTEXT_MAX_SNAPSHOT_CHARS = 8000
+# 总结结果的安全上限。它只限制一条派生工作摘要的大小，不会删除 ExperienceSlice。
+WORKING_CONTEXT_MAX_SUMMARY_CHARS = 12000
+
+# 工作上下文总结使用独立的 LLM 调用配置，避免改变主 Agent 和后台评价的参数。
+# 这次额外调用只在达到 WORKING_CONTEXT_TRIGGER_MESSAGES 时发生。
+WORKING_CONTEXT_LLM_TIMEOUT_SECONDS = 70.0
+WORKING_CONTEXT_LLM_TEMPERATURE = 0.1
+WORKING_CONTEXT_LLM_MAX_TOKENS = 2048
+
+# 每轮动态上下文最多带入每种时间尺度的一份“最近可用摘要”。
+# 这些摘要来自 ExperienceSlice，只是背景索引；需要完整过程时仍调用 recall_memory。
+RECENT_PERIOD_SUMMARY_MAX_CHARS = 3500

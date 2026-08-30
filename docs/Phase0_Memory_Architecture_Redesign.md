@@ -409,7 +409,7 @@ Step 5 当前只做“即时回看”和“原子记忆候选”，不做片段�
 
 #### Checkpoint 压缩不等于长期记忆
 
-LangGraph checkpoint 的职责是恢复 Agent 的短期运行状态，不是保存可供长期反思的权威经历。当前项目已移除 LangChain 通用 `SummarizationMiddleware`；`core/working_context.py` 的第一版 `WorkingContextMiddleware` 达到消息阈值后，用无网络、带来源标记的系统工作快照替换较早活动消息，并保留最近消息。这个新状态会继续写入 checkpoint，但不等于长期情景摘要，后者必须读取 ExperienceSlice。
+LangGraph checkpoint 的职责是恢复 Agent 的短期运行状态，不是保存可供长期反思的权威经历。当前项目已移除 LangChain 通用 `SummarizationMiddleware`；`core/working_context.py` 的 `WorkingContextMiddleware` 达到消息阈值后，调用项目专用的低温度总结 LLM，把较早活动消息整理为带来源标记的 `SystemMessage`，并与最近消息一起写入新的 checkpoint 工作窗口。这个新状态会继续写入 checkpoint，但不等于长期情景摘要，后者必须读取 ExperienceSlice。
 
 通用总结器不能直接承担本项目的片段总结或长期整理：
 
@@ -420,7 +420,9 @@ LangGraph checkpoint 的职责是恢复 Agent 的短期运行状态，不是保�
 
 正式的多时间尺度情景记忆必须以逐轮持久化的不可变 `ExperienceSlice` 为原始证据。ExperienceSlice 在每轮行动完成后立即追加保存；片段、每日、周/月摘要都是可重建的派生索引，必须保存时间范围、来源 slice id、生成时间和算法/Prompt 版本，并允许从摘要定位一段按时间顺序排列的原始过程。`memory/experience_summary_store.py` 已建立摘要存储契约，`memory/experience_summary_builder.py` 已提供不调用 LLM 的片段/每日稳定生成器，`memory/experience_summary_pipeline.py` 已提供按日期显式生成并幂等保存 daily 摘要的流程，`memory/summary_scheduler.py` 已提供启动时检查昨天、上个完整自然周和上个完整自然月的轻量入口；来源切片未变化时跳过，迟到切片导致来源变化时生成新版本。该入口只读 SQLite、不调用 LLM，摘要失败不阻塞主 Agent。周期边界使用实例统一时区，周/月摘要直接读取原始切片而不是只总结旧摘要。`MemoryEntity` 只提供创建时间和最近提及时间作为回忆线索，不把时间戳当成单条切片身份。具体问题队列和施工顺序见 `docs/POST_STEP6_KNOWN_ISSUES.md`；这些工作不进入当前 Step 6 范围。
 
-主 Agent 不自动接收按当前事件筛选出的历史摘要。它平时只看到当前事件、近期详细经历和本轮自然浮现的少量长期认知；当用户提到过去经历、给出时间线索或当前上下文不足时，再主动调用只读 `recall_memory`。工具先返回摘要作为导航，必要时再按时间范围或 `source_slice_ids` 查询原始 ExperienceSlice；工具调用和返回会作为经历中的行动/观察保存，但不会直接写入认知或情绪状态。单轮主动回忆最多调用 10 次，`recall_call_budget()` 在一次主 Agent 调用外建立独立计数，达到上限后返回 `call_limit_reached`。工具已返回 MemoryEntity 与 ExperienceSlice 各自的实际可查询时间覆盖范围，Agent 只能据此描述当前查询能力，不能推断范围之外的历史不存在。不能把所有时间尺度的摘要无条件拼成一份新的无限增长上下文。旧经历缺少 ExperienceSlice 的部分不做补录。
+主 Agent 每轮可以看到最近可用的日、周、月摘要，作为较长时间背景，但不自动接收按当前事件筛选出的相关摘要。它平时看到当前事件、状态、近期详细经历、最近周期摘要和本轮自然浮现的少量长期认知；当用户提到过去经历、给出时间线索或当前上下文不足时，再主动调用只读 `recall_memory`。工具先返回摘要作为导航，必要时再按时间范围或 `source_slice_ids` 查询原始 ExperienceSlice；工具调用和返回会作为经历中的行动/观察保存，但不会直接写入认知或情绪状态。Checkpoint 总结只整理活动对话，不能替代周期摘要，也不能把周期摘要再次总结。工具已接入单轮最多 10 次的共享线程安全预算，第 11 次及以后返回 `call_limit_reached`，并已通过并行调用回归测试。工具已返回 MemoryEntity 与 ExperienceSlice 各自的实际可查询时间覆盖范围，Agent 只能据此描述当前查询能力，不能推断范围之外的历史不存在。不能把所有时间尺度的摘要无条件拼成一份新的无限增长上下文。旧经历缺少 ExperienceSlice 的部分不做补录。
+
+`WorkingContextMiddleware` 已修复消息协议边界：总结前会清理旧 checkpoint 中的孤立或不完整 `ToolMessage`，保留窗口起点如果落在工具结果中间则向前扩展到完整的 `AIMessage(tool_calls)` 组。找不到完整前置调用时丢弃该工具组，不把非法历史发送给模型；该处理只改变模型工作上下文，不会删除 `ExperienceSlice` 中保存的完整工具调用和返回。
 
 #### 最终一致的 ExperienceAppraisal 契约
 

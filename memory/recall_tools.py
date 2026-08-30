@@ -7,8 +7,10 @@ MemoryEntity 检索和 ExperienceSlice 时间查询包装成模型可调用的�
 from __future__ import annotations
 
 import json
+import threading
 from contextlib import contextmanager
 from contextvars import ContextVar
+from dataclasses import dataclass
 from typing import Any
 
 from langchain_core.tools import tool
@@ -24,41 +26,68 @@ from memory.experience_summary_store import list_summaries
 from config import RECALL_MAX_CALLS_PER_TURN
 
 
-_recall_budget: ContextVar[dict[str, int] | None] = ContextVar(
+@dataclass
+class _RecallBudget:
+    """一次主 Agent 调用共享的线程安全计数器。"""
+
+    limit: int
+    count: int = 0
+    lock: threading.Lock = None
+
+    def __post_init__(self) -> None:
+        self.lock = threading.Lock()
+
+
+_recall_budget: ContextVar[_RecallBudget | None] = ContextVar(
     "recall_memory_budget",
     default=None,
 )
+_active_budgets: list[_RecallBudget] = []
+_active_budgets_lock = threading.Lock()
 
 
 @contextmanager
 def recall_call_budget(max_calls: int = RECALL_MAX_CALLS_PER_TURN):
     """为一次 Agent 回合建立独立的 recall_memory 调用计数。
 
-    ContextVar 只在当前调用链生效，因此不同事件、不同线程不会互相消耗
-    次数。工具被单独测试或由其他代码直接调用时没有预算上下文，仍保持
-    原来的只读查询行为；主循环会在 agent.invoke 外层建立预算。
+    正常情况下使用 ContextVar 区分不同事件；当同一个事件被 LangGraph
+    拆到多个并行线程时，活动预算列表会提供一个共享对象，避免每个线程
+    各自从 1 开始计数。工具被单独测试或由其他代码直接调用时没有预算
+    上下文，仍保持原来的只读查询行为。
     """
     if isinstance(max_calls, bool) or not isinstance(max_calls, int) or max_calls < 1:
         raise ValueError("max_calls 必须是大于等于 1 的整数")
 
-    token = _recall_budget.set({"limit": max_calls, "count": 0})
+    budget = _RecallBudget(limit=max_calls)
+    token = _recall_budget.set(budget)
+    with _active_budgets_lock:
+        _active_budgets.append(budget)
     try:
         yield
     finally:
+        with _active_budgets_lock:
+            if budget in _active_budgets:
+                _active_budgets.remove(budget)
         _recall_budget.reset(token)
 
 
 def _consume_recall_call() -> tuple[bool, int, int | None]:
     """消耗一次本轮配额，返回 (是否允许, 当前次数, 上限)。"""
     budget = _recall_budget.get()
+    # LangGraph 的并行工具任务有时会复制执行上下文。单个活动回合时，
+    # 强制使用同一个全局预算对象，确保第 11 次调用一定被拒绝。
+    with _active_budgets_lock:
+        if len(_active_budgets) == 1:
+            budget = _active_budgets[0]
     if budget is None:
         return True, 0, None
 
-    if budget["count"] >= budget["limit"]:
-        return False, budget["count"], budget["limit"]
+    with budget.lock:
+        if budget.count >= budget.limit:
+            return False, budget.count, budget.limit
 
-    budget["count"] += 1
-    return True, budget["count"], budget["limit"]
+        budget.count += 1
+        return True, budget.count, budget.limit
 
 
 def _coverage(thread_id: str | None = None) -> dict[str, dict[str, Any]]:

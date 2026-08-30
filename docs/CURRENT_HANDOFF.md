@@ -1,6 +1,6 @@
 # CURRENT_HANDOFF
 
-更新时间：2026-08-24
+更新时间：2026-08-30
 
 用途：新会话开始时，先读取 `AGENTS.md`、`docs/Phase0_Memory_Architecture_Redesign.md` 和本文件，再继续工作。
 
@@ -201,14 +201,17 @@ Agent 明确发起只读查询 -> 搜索当前整合认知和情景摘要
 - LangChain 的通用 `SummarizationMiddleware` 达到阈值后会用“一条机器总结 + 最近消息”替换 Agent 的活动消息状态，随后由 LangGraph 写入新的 checkpoint；它不是只压缩某一次临时模型请求。
 - 当前默认总结 Prompt 面向任务型 Agent，要求提取 session intent、summary、artifacts 和 next steps；它没有本项目的来源、事实、关系、情绪和不确定性边界。总结还会作为 `HumanMessage` 回到活动历史，存在把机器推断伪装成用户内容的风险。
 - checkpoint 只负责短期运行恢复，不是长期经历权威库。旧 checkpoint 快照即使仍物理存在，也不能代替不可变事件档案。
-- Step 6 已完成，当前已加入短期工作上下文第一版：`core/working_context.py` 在 checkpoint 消息达到阈值时做无网络裁剪，保留最近消息，并用明确标记的 `SystemMessage` 保存旧消息的工作快照。它不替代 `ExperienceSlice`，也不生成长期情景摘要。每轮切片立即保存；片段、日、周、月只是对已经保存的切片做后续派生摘要。所有派生摘要必须保留时间范围、来源 slice id、生成时间和算法/Prompt 版本，且不得覆盖原始经历。
+- Step 6 已完成。当前短期上下文分成两部分：`core/context_builder.py` 每轮读取最近可用的日、周、月摘要作为长期背景，并保留最近几轮详细经历；`core/working_context.py` 在 checkpoint 消息达到阈值时调用项目专用总结 LLM，把更早消息整理成带来源标记的 `SystemMessage`，再与最近消息一起保存。两类摘要用途不同，互不替代：周期摘要直接来自 `ExperienceSlice`，Checkpoint 总结只服务当前运行连续性。每轮切片立即保存；所有派生摘要必须保留时间范围、来源 slice id、生成时间和算法/Prompt 版本，且不得覆盖原始经历。
 - `MemoryEntity` 不保存完整的切片历史。它只提供 `created_at` 和 `last_mentioned_at` 作为时间线索；Agent 需要回忆具体过程时，按时间范围读取一组 ExperienceSlice，而不是把某个时间误当成唯一切片 id。
 - 情景摘要用于快速定位，原始 ExperienceSlice 才是具体过程。摘要命中后，回忆工具应返回对应时间范围内按事件顺序排列的多条经历。
-- 主 Agent 不自动接收“与当前事件相关的历史摘要”。当前上下文只提供当前事件、状态、近期详细上下文和本轮自然浮现的少量长期认知；当用户提到过去经历、给出时间线索或需要具体细节时，主 Agent 自己调用只读 `recall_memory`，先看摘要定位，再按时间范围或来源 id 查询原始 ExperienceSlice。普通当前事件不需要每轮调用工具。
-- `recall_memory` 的单轮调用上限为 10 次。`memory.recall_tools.recall_call_budget()` 在每次主 Agent 调用外建立独立计数；达到上限后工具返回 `call_limit_reached`，主 Agent 必须根据已有结果回答，不能继续扩大查询。
+- 主 Agent 每轮可以看到最近可用的日、周、月摘要，作为较长时间背景，但不会自动接收按当前事件筛选出的相关摘要。当前事件、状态、近期详细经历、最近周期摘要和本轮自然浮现的少量长期认知共同组成基础上下文；当用户提到过去经历、给出时间线索或需要具体细节时，主 Agent 自己调用只读 `recall_memory`，先看摘要定位，再按时间范围或来源 id 查询原始 ExperienceSlice。普通当前事件不需要每轮调用工具。
+- `recall_memory` 已接入单轮 10 次上限和覆盖范围返回。`memory.recall_tools` 使用同一轮共享的线程安全预算对象；即使 LangGraph 并行执行工具，第 11 次及以后也会返回 `call_limit_reached`，并发回归测试已通过。
 - `recall_memory` 已返回当前实例可查询数据的覆盖范围：`data_coverage.memory_entities` 与 `data_coverage.experience_slices` 分别提供记录数、最早时间和最晚时间。Agent 只能据此说明“当前可查询范围内最早找到的记录”，不能据此声称整个历史不存在。
 - 旧经历在长期记忆功能接入前没有持久化的部分不做补录；它们属于历史数据缺口，不作为本阶段施工目标。
-- 通用 `SummarizationMiddleware` 已从主 Agent middleware 链路移除。`WorkingContextMiddleware` 只替换“旧对话如何裁剪”的方法，不替换 checkpoint 本身；它的第一版根据旧消息生成短期工作快照，并与最近几轮原文一起提供给 Agent。后续片段/每日摘要才会以 ExperienceSlice 为唯一原始来源。
+- 通用 `SummarizationMiddleware` 已从主 Agent middleware 链路移除。`WorkingContextMiddleware` 现在使用独立的低温度总结 LLM，把旧消息整理成项目定义的短期工作上下文，并以 `SystemMessage` 和 `source=project_working_context` 标记保存；总结失败时回退为来源清晰的原始记录，不阻塞主 Agent。
+- `WorkingContextMiddleware` 会先清理旧 checkpoint 中的孤立 `ToolMessage`，并按完整的 `AIMessage(tool_calls)` + 对应工具结果组保留最近窗口，不能把工具调用拆开。工具返回很长时只允许在工作上下文中省略，不能从 `ExperienceSlice` 删除。
+- 总结器参数集中在 `config.py`：`WORKING_CONTEXT_LLM_TIMEOUT_SECONDS`、`WORKING_CONTEXT_LLM_TEMPERATURE`、`WORKING_CONTEXT_LLM_MAX_TOKENS` 和 `WORKING_CONTEXT_MAX_SUMMARY_CHARS`。这些参数只影响短期工作上下文，不影响主 Agent 回复或后台评价。
+- `tools/test_working_context_llm.py` 提供三种手动验收：`extreme` 检查来源混杂和越权推断，`checkpoint` 读取真实线程历史，`trigger` 构造 41 条消息走完整 `before_model()` 阈值流程。三种模式均只读数据；`trigger` 已确认会生成项目派生 `SystemMessage` 并保留最近 20 条消息。
 - 已确认的风险、施工顺序和验收条件统一记录在 `docs/POST_STEP6_KNOWN_ISSUES.md`。
 
 ## Step 6 之后的人格演化统一方案
@@ -267,9 +270,103 @@ PerceptionEvent
 
 当前决定：Somatic Simulation 仍是后续通用扩展，不插入 ExperienceSlice 持久化、情景记忆和人格演化的当前主线。它以后产生的身体状态、内感受和可见反应，必须和普通用户事件一样进入 ExperienceSlice，不能另建一套无法回溯的历史。
 
+### Somatic Simulation 详细架构流程（Claude 审核版 2026-08-30）
+
+```
+用户输入："（轻抚你的大腿）"
+    ↓
+PerceptionEvent(source="user", content="（轻抚你的大腿）")
+    ↓
+PerceptionUnderstanding → 识别出 module_requests: ["somatic_simulation"]
+    ↓
+【Somatic Simulation Module】
+    ├─ 1. 模拟事件裁决（确认接触确实发生）
+    │   结构化输出：
+    │   {
+    │     "event_confirmed": true,
+    │     "contact_object": "user",
+    │     "contact_area": "thigh",
+    │     "intensity": "gentle",
+    │     "duration": "brief",
+    │     "uncertainty": "low"
+    │   }
+    ↓
+    ├─ 2. 身体评价 LLM（只输出方向/幅度，类似 mood 处理）
+    │   输入：事件裁决结果 + 当前身体状态快照 + mood 背景
+    │   输出：
+    │   {
+    │     "arousal_change": "increase",      # 只给方向，不给绝对值
+    │     "arousal_magnitude": "slight",     # 幅度：slight/moderate/significant/intense
+    │     "sensitivity_change": "increase",
+    │     "sensitivity_magnitude": "slight",
+    │     "visible_reaction_type": "muscle_twitch",
+    │     "interoception_description": "大腿处传来温热触感，身体有些紧张",
+    │     "reason": "接触非敏感区域，反应轻微"
+    │   }
+    ↓
+    ├─ 3. 代码计算最终状态（类似 mood 边界衰减）
+    │   使用固定 delta 映射表（框架层）：
+    │   BODY_STATE_DELTA = {
+    │     "slight": 0.05,
+    │     "moderate": 0.10,
+    │     "significant": 0.15,
+    │     "intense": 0.20,
+    │   }
+    │
+    │   arousal: 0.50 → clamp(0.50 + 0.05, 0.0, 1.0) = 0.55
+    │   sensitivity: 0.60 → clamp(0.60 + 0.05, 0.0, 1.0) = 0.65
+    ↓
+    ├─ 4. 生成可见本能反应（AgentAction，必须进入 ExperienceSlice）
+    │   create_agent_action(
+    │     action_type="somatic_response",
+    │     content="身体微微颤了一下",
+    │     metadata={
+    │       "triggered_by": "somatic_module",
+    │       "body_state_snapshot": {arousal: 0.55, sensitivity: 0.65, ...}
+    │     }
+    │   )
+    ↓
+    └─ 5. 生成内感受事件（PerceptionEvent，注入下一轮）
+        PerceptionEvent(
+          source="somatic_module",
+          modality="interoception",
+          content="大腿处传来温热触感，身体有些紧张",
+          metadata={
+            "arousal": 0.55,
+            "sensitivity": 0.65,
+            "triggered_by_event": "evt_xxx"
+          }
+        )
+    ↓
+主 Agent 回应（感知到内感受后回应）
+"（略微紧张地看着主人）嗯..."
+    ↓
+ExperienceSlice 完整记录：
+  - perception_event: 用户轻抚动作
+  - response_or_actions: [可见本能反应, 主 Agent 回应]
+  - observations: [内感受事件]
+  - 所有输出可回溯到原始接触事件
+```
+
+关键设计决策：
+
+1. **LLM 只输出方向和幅度，代码负责最终数值**：避免 LLM 输出不连续、边界越界或与当前状态冲突。类似 `emotion_assessment` 的 `change_direction` + `EMOTION_AFFECT_DIRECTION_DELTA` 模式。
+
+2. **内感受作为独立 PerceptionEvent 注入下一轮**：不直接混入当前轮的动态提示词，而是作为新的感知事件让主 Agent 在下一轮自然回应。这保持了"所有感知走统一入口"的原则。
+
+3. **可见本能反应必须进入 ExperienceSlice**：不能只打印后丢失。它属于 `AgentAction`，与主 Agent 的 `visible_response` 并列，但由身体模块生成。
+
+4. **身体状态不直接证明同意或关系**：arousal=0.8 不等于"Agent 同意了"或"Agent 喜欢这个人"。身体反应与情绪、认知、安全边界是分离的四个系统。
+
+5. **模拟事件裁决是必要前置步骤**：用户说"（轻抚）"不等于接触已发生。裁决层必须判断：对象是谁、部位在哪、强度多大、是否确认发生。不确定的事件不进入身体状态更新。
+
+6. **通用框架与成人扩展分离**：框架层只定义 `body_state` 的协议（key-value 存储、delta 更新规则、LLM 评价接口）。具体字段（genital_arousal、moisture 等）和身体模型放入可选的成人扩展配置。
+
+实现优先级：该模块在 ExperienceSlice 持久化、情景摘要和人格证据**全部稳定后**再接入，确保身体状态变化能像其他经历一样被回溯、查询和用于长期反思。
+
 ## 下一步施工顺序
 
-1. 完成 `recall_memory` 的单轮最多 10 次硬限制，并为工具结果增加 MemoryEntity / ExperienceSlice 的实际时间覆盖范围。
+1. 在真实长对话中验收项目专用 Checkpoint 总结的延迟、稳定性和工具消息协议。
 2. 继续使用当前已持久化的 ExperienceSlice 建立摘要和回忆能力；长期记忆功能接入前缺少的旧经历不做补录。
 3. 经历证据稳定后，再依次建设 `trait_evidence`、`PersonalitySnapshot` 和只作派生展示的 `TRAIT_INSIGHT`；在此之前不实现人格更新。
 4. 延迟分布、mood 20/50/80 表达差异、新认知初始分边界堆积、单次互动候选过多和关系邻居排序继续作为观察项，不阻塞当前存储主线。

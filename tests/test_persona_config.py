@@ -44,6 +44,10 @@ class PersonaConfigTests(unittest.TestCase):
         self.assertIn("禁止使用这些说法", prompt)
         self.assertIn("recall_memory", prompt)
         self.assertIn("只读工具", prompt)
+        self.assertIn("系统不会每轮自动把相关历史摘要塞进你的上下文", prompt)
+        self.assertIn("你应主动调用只读工具", prompt)
+        self.assertIn("普通当前事件不需要为了“确认一下”而每轮调用工具", prompt)
+        self.assertIn("单轮主动回忆最多调用 10 次", prompt)
 
     def test_persona_uses_source_aware_outside_domain_rule(self):
         persona = load_persona()

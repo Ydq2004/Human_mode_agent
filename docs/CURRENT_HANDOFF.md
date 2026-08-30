@@ -57,7 +57,7 @@
 代码已经完成感知理解、自动认知唤起、主 Agent、`ExperienceSlice`、后台 `ExperienceAppraisal`、规则计算和进程内有序提交闭环。主回复不等待 appraisal；评价完成后由独立 `CommitWorker` 按事件序号提交 mood、事实认知、认知情绪和一跳关系。
 
 - 回应前：`core/context_builder.py` 使用 `PerceptionFrame`、精简后的 `PerceptionUnderstanding` 和新的 `memory.retrieval_engine`，把有限、非穷尽的结果作为自动认知唤起，返回结构化 `activated_memory_refs` 和 `memory_activation_state`。
-- 回应后：`ExperienceSlice` 记录感知、理解、自动唤起引用、Agent 当时可见的能力快照、认知访问状态、AgentAction、观察、事件开始状态快照和结构化 `preceding_context`。现在会在提交后台评价前追加写入 `sql_db.db` 的 `experience_slices` 表，并支持按 id、时间范围和线程读取。`memory/experience_summary_store.py` 保存摘要，`memory/experience_summary_builder.py` 已提供不调用 LLM 的片段/每日稳定生成器；自动调度、周/月摘要和人格证据仍未实现。
+- 回应后：`ExperienceSlice` 记录感知、理解、自动唤起引用、Agent 当时可见的能力快照、认知访问状态、AgentAction、观察、事件开始状态快照和结构化 `preceding_context`。现在会在提交后台评价前追加写入 `sql_db.db` 的 `experience_slices` 表，并支持按 id、时间范围和线程读取。`memory/experience_summary_store.py` 保存摘要，`memory/experience_summary_builder.py` 已提供不调用 LLM 的片段/每日/周/月稳定生成器；启动时周期检查已接入，外部定时调度和人格证据仍未实现。
 - 后台 appraisal 终态、提交状态、结果和错误会写入同一 SQLite 的 `commit_ledger` 表。它能在重启后告诉我们任务停在哪里；当前只记录和查询，不会自动重跑未完成任务。
 - `process_perception_event` 冻结经历后立即向单 worker FIFO 队列提交 appraisal，只把 `pending/completed/failed` 任务真值和稳定 job id 返回给调用方，不等待后台 LLM。
 - CLI 先显示主回复，再在后续事件边界输出已经完成的后台结果；后台异常保存在任务记录中，不伪装成 fallback，也不在线程中静默消失。
@@ -91,7 +91,8 @@ PerceptionEvent
 
 当前仍未完成：
 
-- ExperienceSlice 的第一版追加存储和跨进程读取已完成；提交账本、SQLite/Chroma 存储修复队列、摘要存储契约、无 LLM 的片段/每日摘要生成器、按日期显式生成流程和只读 `recall_memory` 工具已完成；自动调度、周/月摘要生成仍未完成。
+- ExperienceSlice 的第一版追加存储和跨进程读取已完成；提交账本、SQLite/Chroma 存储修复队列、摘要存储契约、无 LLM 的片段/每日/周/月摘要生成器、启动周期检查和只读 `recall_memory` 工具已完成；外部定时调度和人格证据仍未完成。
+- 周期摘要调度规则已接入启动流程：启动时检查昨天、上个完整自然周和上个完整自然月；来源切片未变化时跳过，发现迟到新切片时生成新版本。该检查只读 SQLite、不会调用 LLM；检查失败不会阻塞主 Agent 启动。以后仍可由外部定时任务复用同一入口。
 
 已补齐：
 
@@ -203,7 +204,10 @@ Agent 明确发起只读查询 -> 搜索当前整合认知和情景摘要
 - Step 6 已完成，当前已加入短期工作上下文第一版：`core/working_context.py` 在 checkpoint 消息达到阈值时做无网络裁剪，保留最近消息，并用明确标记的 `SystemMessage` 保存旧消息的工作快照。它不替代 `ExperienceSlice`，也不生成长期情景摘要。每轮切片立即保存；片段、日、周、月只是对已经保存的切片做后续派生摘要。所有派生摘要必须保留时间范围、来源 slice id、生成时间和算法/Prompt 版本，且不得覆盖原始经历。
 - `MemoryEntity` 不保存完整的切片历史。它只提供 `created_at` 和 `last_mentioned_at` 作为时间线索；Agent 需要回忆具体过程时，按时间范围读取一组 ExperienceSlice，而不是把某个时间误当成唯一切片 id。
 - 情景摘要用于快速定位，原始 ExperienceSlice 才是具体过程。摘要命中后，回忆工具应返回对应时间范围内按事件顺序排列的多条经历。
-- 未来主 Agent 的上下文组合顺序固定为：当前事件 -> 与当前事件相关的长期/年度/月度/周度摘要 -> 最近十几轮详细经历。不是每轮无条件塞入所有摘要；先按当前事件筛选相关摘要，再注入有限内容。
+- 主 Agent 不自动接收“与当前事件相关的历史摘要”。当前上下文只提供当前事件、状态、近期详细上下文和本轮自然浮现的少量长期认知；当用户提到过去经历、给出时间线索或需要具体细节时，主 Agent 自己调用只读 `recall_memory`，先看摘要定位，再按时间范围或来源 id 查询原始 ExperienceSlice。普通当前事件不需要每轮调用工具。
+- `recall_memory` 的单轮调用上限为 10 次。`memory.recall_tools.recall_call_budget()` 在每次主 Agent 调用外建立独立计数；达到上限后工具返回 `call_limit_reached`，主 Agent 必须根据已有结果回答，不能继续扩大查询。
+- `recall_memory` 已返回当前实例可查询数据的覆盖范围：`data_coverage.memory_entities` 与 `data_coverage.experience_slices` 分别提供记录数、最早时间和最晚时间。Agent 只能据此说明“当前可查询范围内最早找到的记录”，不能据此声称整个历史不存在。
+- 旧经历在长期记忆功能接入前没有持久化的部分不做补录；它们属于历史数据缺口，不作为本阶段施工目标。
 - 通用 `SummarizationMiddleware` 已从主 Agent middleware 链路移除。`WorkingContextMiddleware` 只替换“旧对话如何裁剪”的方法，不替换 checkpoint 本身；它的第一版根据旧消息生成短期工作快照，并与最近几轮原文一起提供给 Agent。后续片段/每日摘要才会以 ExperienceSlice 为唯一原始来源。
 - 已确认的风险、施工顺序和验收条件统一记录在 `docs/POST_STEP6_KNOWN_ISSUES.md`。
 
@@ -265,8 +269,8 @@ PerceptionEvent
 
 ## 下一步施工顺序
 
-1. 完善 ExperienceSlice 存储验收，并建立 SQLite/Chroma 不一致时的存储修复机制。
-2. 时间上下文的第一版已完成；下一步基于持久化经历替换通用短期对话压缩，再建设片段/每日摘要与只读经历查询；派生摘要不能覆盖原始经历。
+1. 完成 `recall_memory` 的单轮最多 10 次硬限制，并为工具结果增加 MemoryEntity / ExperienceSlice 的实际时间覆盖范围。
+2. 继续使用当前已持久化的 ExperienceSlice 建立摘要和回忆能力；长期记忆功能接入前缺少的旧经历不做补录。
 3. 经历证据稳定后，再依次建设 `trait_evidence`、`PersonalitySnapshot` 和只作派生展示的 `TRAIT_INSIGHT`；在此之前不实现人格更新。
 4. 延迟分布、mood 20/50/80 表达差异、新认知初始分边界堆积、单次互动候选过多和关系邻居排序继续作为观察项，不阻塞当前存储主线。
 5. 经历证据持久化稳定后，再设计按需 `Somatic Simulation`：先完成通用模块请求和模拟事件裁决，再建设身体状态提交、内感受事件和可见本能行动；成人身体模型作为后续可选扩展。

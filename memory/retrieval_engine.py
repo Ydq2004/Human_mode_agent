@@ -432,14 +432,9 @@ def retrieve_memories(
            filters=filters,
         ):
             quality = _classify_vector_distance(distance)
-            
-            print(
-                "vector_candidate",
-                quality,
-                entity.concept_id,
-                entity.canonical_name,
-                distance,
-            )
+
+            # weak / rejected 候选仍写入结构化调试结果，
+            # 但不在每轮直接打印，避免自动唤起时刷屏。
             if quality != "accepted":
                 debug_vector_candidates.append(
                     VectorCandidateDebug(

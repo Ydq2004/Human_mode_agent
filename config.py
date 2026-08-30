@@ -40,6 +40,11 @@ DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
 EMBEDDING_MODEL_NAME = "BAAI/bge-small-zh-v1.5"
 RETRIEVAL_K = 5
 
+# 主 Agent 单轮主动回忆最多调用次数。
+# 这是代码层硬限制，不依赖提示词；达到上限后，工具返回限制状态，
+# Agent 必须根据已经拿到的结果回答，不能继续扩大查询。
+RECALL_MAX_CALLS_PER_TURN = 10
+
 
 # ========== 情绪运行状态 ==========
 MOOD_MIN = 0

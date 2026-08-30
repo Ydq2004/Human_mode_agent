@@ -160,20 +160,29 @@ MemoryEntity 的 `created_at` 和 `last_mentioned_at` 只负责告诉 Agent “�
 ### 处理要求
 
 - 每份摘要保存覆盖时间、来源 slice id、生成时间、Prompt/算法版本和不确定性。
-- `memory/experience_summary_store.py` 已提供 `experience_summaries` 表和追加式保存/读取；`memory/experience_summary_builder.py` 已提供不调用 LLM 的片段/每日稳定生成器；`memory/experience_summary_pipeline.py` 的 `generate_daily_summary(day)` 可以按日期读取、生成并幂等保存 daily 摘要。当前仍没有定时调度，也不负责周/月反思。
+- `memory/experience_summary_store.py` 已提供 `experience_summaries` 表和追加式保存/读取；`memory/experience_summary_builder.py` 已提供不调用 LLM 的片段/每日/周/月稳定生成器；`memory/experience_summary_pipeline.py` 的 `generate_daily_summary(day)` 可以按日期读取、生成并幂等保存 daily 摘要；`memory/summary_scheduler.py` 已在启动时检查昨天、上周和上月。当前仍没有独立的外部定时调度，也不负责周/月的更深层反思。
+- 周期摘要的计划规则：每日检查昨天；每周检查上一个完整自然周；每月检查上一个完整自然月。当前已接入 `main()` 启动检查；检查只读 SQLite、不会调用 LLM，失败不阻塞主 Agent。以后如果进程长时间不重启，可由独立定时任务复用同一入口。不需要全天重复检查同一周期。
+- “已生成”不等于永远跳过：如果摘要保存的 `source_slice_ids` 与该周期当前实际切片一致，则直接跳过；如果后来补进迟到切片，来源列表发生变化，就生成新的摘要版本。旧摘要和原始切片保留，不覆盖历史。
+- 周/月摘要应直接读取对应周期的原始 `ExperienceSlice`，不能只把旧的每日摘要再次总结，避免误差逐层累积。所有周期边界使用实例统一时区，并按自然日、自然周、自然月计算。
 - 周/月反思不能只对旧摘要继续做无来源的“总结的总结”；至少要能回查并抽样核对原始证据。
 - 关系变化、人格变化和情绪印记不能因为摘要措辞而直接更新，仍要经过各自证据链和提交规则。
-- 启动时注入近期详细经历和有限的派生摘要；长期细节按相关性检索，不注入一份不断膨胀的全生命周期总摘要。
+- 主 Agent 不自动接收按当前事件筛选出的历史摘要。当前上下文只保留近期详细经历和本轮自然浮现的少量长期认知；长期细节由主 Agent 在确有回忆需要时调用 `recall_memory` 获取，避免每轮增加检索和上下文长度。
+- 单轮主动回忆不能无限循环。`config.py` 中的 `RECALL_MAX_CALLS_PER_TURN=10` 是硬上限；`memory.recall_tools.recall_call_budget()` 在一次 `agent.invoke()` 外建立独立计数，达到上限后返回 `result_status=call_limit_reached`。提示词只负责引导尽快停止，代码层负责最终限制。
+- 回忆工具已返回数据覆盖范围，至少包含 MemoryEntity 和 ExperienceSlice 各自的记录数、最早和最晚可查询时间。覆盖范围只描述当前数据库实际存在的记录，不代表完整人生历史，也不能证明范围之外从未发生过事情。
+- 旧经历缺少 ExperienceSlice 的部分不安排补录。后续系统从当前已经持久化的经历开始建立摘要和回忆能力。
 
 ### 约定的上下文组合顺序
 
 ```text
 当前事件
--> 相关的长期/年度/月度/周度摘要
 -> 最近十几轮详细经历
+-> 本轮自然浮现的少量长期认知
+-> （需要时）主 Agent 调用 recall_memory 获取摘要和原始经历
 ```
 
-摘要不会每轮全部注入，而是先按当前事件筛选；如果需要具体过程，再按摘要指向的时间范围读取多条 ExperienceSlice。
+摘要不会自动注入主 Agent。`recall_memory` 返回的摘要只用于定位；如果需要具体过程，再按摘要指向的时间范围读取多条 ExperienceSlice。普通当前事件不需要调用工具。
+
+当前测试发现一轮问题可能触发多次探索性查询。单轮最多 10 次的硬限制和可查询时间覆盖范围已经接入；后续开放测试继续观察 Agent 是否能在拿到足够结果后主动停止。
 
 ### 验收条件
 
@@ -185,7 +194,7 @@ MemoryEntity 的 `created_at` 和 `last_mentioned_at` 只负责告诉 Agent “�
 
 ### 目标
 
-主 Agent 平时只接收短期详细上下文和相关摘要；当用户提到某段往事时，可以调用 `recall_memory`，先查长期认知/摘要，再按时间范围读取当时的一组具体经历。
+主 Agent 平时只接收短期详细上下文和本轮自然浮现的认知；当用户提到某段往事、给出时间线索或当前上下文不足时，应调用 `recall_memory`，先查长期认知/摘要，再按时间范围读取当时的一组具体经历。
 
 ### 边界
 

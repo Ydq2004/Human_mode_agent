@@ -80,14 +80,9 @@ class ExperienceSummaryBuilderTests(unittest.TestCase):
         self.assertEqual(item.experience.to_dict(), before)
         self.assertIn("原始消息", summary.summary_text)
 
-    def test_empty_input_and_unsupported_period_are_rejected(self):
+    def test_empty_input_is_rejected(self):
         with self.assertRaises(ValueError):
             build_segment_summary([])
-        with self.assertRaises(ValueError):
-            build_summary(
-                [_stored("evt-4", "2026-08-24T13:00:00", "内容")],
-                summary_type="weekly",
-            )
 
     def test_daily_summary_rejects_multiple_dates(self):
         with self.assertRaises(ValueError):

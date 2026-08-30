@@ -91,9 +91,13 @@ class MainDebugOutputTests(unittest.TestCase):
         self.assertIn("[耗时]", text)
         self.assertIn("感知理解：0.123 秒", text)
         self.assertIn("[本轮自然浮现的认知（0 条）]", text)
-        self.assertIn("[ExperienceSlice（完整结构）]", text)
+        self.assertIn("[ExperienceSlice（已保存，终端摘要）]", text)
+        self.assertIn('"saved": true', text)
+        self.assertIn('"observation_count": 0', text)
         self.assertIn('"situated_understanding": "测试理解"', text)
         self.assertIn('"status": "pending"', text)
+        self.assertNotIn("[检索详情]", text)
+        self.assertNotIn('"perception_event"', text)
 
     def test_completed_appraisal_has_its_own_debug_block(self):
         output = StringIO()

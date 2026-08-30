@@ -121,8 +121,8 @@ def build_summary(
     text_limit: int = 240,
 ) -> ExperienceSummary:
     """从一组切片生成一份可追加保存的摘要。"""
-    if summary_type not in {"segment", "daily"}:
-        raise ValueError("第一版生成器只支持 segment 或 daily")
+    if summary_type not in {"segment", "daily", "weekly", "monthly"}:
+        raise ValueError("生成器支持 segment、daily、weekly 和 monthly")
     if isinstance(text_limit, bool) or not isinstance(text_limit, int) or text_limit < 20:
         raise ValueError("text_limit 必须是大于等于 20 的整数")
 
@@ -203,6 +203,40 @@ def build_daily_summary(
     return build_summary(
         items,
         summary_type="daily",
+        summary_id=summary_id,
+        generated_at=generated_at,
+        text_limit=text_limit,
+    )
+
+
+def build_weekly_summary(
+    slices: Sequence[StoredExperienceSlice],
+    *,
+    summary_id: str | None = None,
+    generated_at: str | None = None,
+    text_limit: int = 240,
+) -> ExperienceSummary:
+    """生成上一个完整自然周的摘要。"""
+    return build_summary(
+        slices,
+        summary_type="weekly",
+        summary_id=summary_id,
+        generated_at=generated_at,
+        text_limit=text_limit,
+    )
+
+
+def build_monthly_summary(
+    slices: Sequence[StoredExperienceSlice],
+    *,
+    summary_id: str | None = None,
+    generated_at: str | None = None,
+    text_limit: int = 240,
+) -> ExperienceSummary:
+    """生成上一个完整自然月的摘要。"""
+    return build_summary(
+        slices,
+        summary_type="monthly",
         summary_id=summary_id,
         generated_at=generated_at,
         text_limit=text_limit,

@@ -418,9 +418,9 @@ LangGraph checkpoint 的职责是恢复 Agent 的短期运行状态，不是保�
 3. 后续压缩可能再次总结旧总结，形成有损漂移；派生的关系解释、情绪结论或人格判断可能在循环中逐渐被强化。
 4. checkpoint 中的旧快照即使仍物理存在，也只是运行状态历史，不能作为不可变事件账本或长期记忆主库。
 
-正式的多时间尺度情景记忆必须以逐轮持久化的不可变 `ExperienceSlice` 为原始证据。ExperienceSlice 在每轮行动完成后立即追加保存；片段、每日、周/月摘要都是可重建的派生索引，必须保存时间范围、来源 slice id、生成时间和算法/Prompt 版本，并允许从摘要定位一段按时间顺序排列的原始过程。`memory/experience_summary_store.py` 已建立摘要存储契约，`memory/experience_summary_builder.py` 已提供不调用 LLM 的片段/每日稳定生成器，`memory/experience_summary_pipeline.py` 已提供按日期显式生成并幂等保存 daily 摘要的流程；自动调度和周/月反思仍未接入。`MemoryEntity` 只提供创建时间和最近提及时间作为回忆线索，不把时间戳当成单条切片身份。具体问题队列和施工顺序见 `docs/POST_STEP6_KNOWN_ISSUES.md`；这些工作不进入当前 Step 6 范围。
+正式的多时间尺度情景记忆必须以逐轮持久化的不可变 `ExperienceSlice` 为原始证据。ExperienceSlice 在每轮行动完成后立即追加保存；片段、每日、周/月摘要都是可重建的派生索引，必须保存时间范围、来源 slice id、生成时间和算法/Prompt 版本，并允许从摘要定位一段按时间顺序排列的原始过程。`memory/experience_summary_store.py` 已建立摘要存储契约，`memory/experience_summary_builder.py` 已提供不调用 LLM 的片段/每日稳定生成器，`memory/experience_summary_pipeline.py` 已提供按日期显式生成并幂等保存 daily 摘要的流程，`memory/summary_scheduler.py` 已提供启动时检查昨天、上个完整自然周和上个完整自然月的轻量入口；来源切片未变化时跳过，迟到切片导致来源变化时生成新版本。该入口只读 SQLite、不调用 LLM，摘要失败不阻塞主 Agent。周期边界使用实例统一时区，周/月摘要直接读取原始切片而不是只总结旧摘要。`MemoryEntity` 只提供创建时间和最近提及时间作为回忆线索，不把时间戳当成单条切片身份。具体问题队列和施工顺序见 `docs/POST_STEP6_KNOWN_ISSUES.md`；这些工作不进入当前 Step 6 范围。
 
-未来主 Agent 的上下文组合顺序为：当前事件、按相关性筛选出的长期/年度/月度/周度摘要、最近十几轮详细经历。摘要只负责快速定位，具体过程仍从原始 ExperienceSlice 读取；不能把所有时间尺度的摘要无条件拼成一份新的无限增长上下文。当前已接入只读 `recall_memory` 工具，可按认知、关键词、时间、线程或 `slice_id` 进行主动回忆；工具调用和返回会作为经历中的行动/观察保存，但不会直接写入认知或情绪状态。
+主 Agent 不自动接收按当前事件筛选出的历史摘要。它平时只看到当前事件、近期详细经历和本轮自然浮现的少量长期认知；当用户提到过去经历、给出时间线索或当前上下文不足时，再主动调用只读 `recall_memory`。工具先返回摘要作为导航，必要时再按时间范围或 `source_slice_ids` 查询原始 ExperienceSlice；工具调用和返回会作为经历中的行动/观察保存，但不会直接写入认知或情绪状态。单轮主动回忆最多调用 10 次，`recall_call_budget()` 在一次主 Agent 调用外建立独立计数，达到上限后返回 `call_limit_reached`。工具已返回 MemoryEntity 与 ExperienceSlice 各自的实际可查询时间覆盖范围，Agent 只能据此描述当前查询能力，不能推断范围之外的历史不存在。不能把所有时间尺度的摘要无条件拼成一份新的无限增长上下文。旧经历缺少 ExperienceSlice 的部分不做补录。
 
 #### 最终一致的 ExperienceAppraisal 契约
 
@@ -930,7 +930,7 @@ Phase 0 的事实写入与认知情绪印记写入分开处理：事实候选由
 - 自动化契约与集成测试已覆盖有序水位、失败推进、进程内幂等、方向规范化、same 情绪转换、related 建边和提交时情绪重算；当前完整测试为 `124/124` 通过。
 - 每轮无冲击时的基线回归已接入：`emotion.appraisal_rules.compute_committed_mood_change` 只在 `mood_impact == 0` 时向基线移动一步，`emotion.manager.commit_mood_effect` 在同一 SQLite 事务中写入最终值。`begin_perception_event` 的离线时间回归仍是另一条独立机制。
 - 真实 LLM 与真实存储开放验收已完成：`create/update/reinforce`、已有认知情绪更新、`related` 创建独立实体并写入一跳关系、正负 mood 冲击、零冲击基线回归、跨重启召回和退出排空均已实际到达；一次验收中的 6 个任务按事件序号全部进入 `committed`，没有 `commit_failed`。
-- Step 6 到此收口。不可变 ExperienceSlice 存储和跨进程提交账本已有第一版；SQLite/Chroma 修复队列、摘要存储和无 LLM 的片段/每日摘要生成器已转入后续施工，自动调度、只读经历查询和人格演化仍未完成。
+- Step 6 到此收口。不可变 ExperienceSlice 存储和跨进程提交账本已有第一版；SQLite/Chroma 修复队列、摘要存储、无 LLM 的片段/每日/周/月摘要生成器、启动周期检查和只读经历查询已转入后续施工，外部定时调度、周/月深层反思和人格演化仍未完成。
 
 任务：
 

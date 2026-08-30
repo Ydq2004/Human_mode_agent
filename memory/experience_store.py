@@ -315,6 +315,38 @@ def list_experience_slices(
     return [_row_to_stored(row) for row in rows]
 
 
+def get_experience_time_coverage(
+    *,
+    thread_id: str | None = None,
+) -> dict[str, Any]:
+    """返回当前经历表实际覆盖的时间范围。
+
+    这是回忆工具展示能力边界用的统计，不代表范围之外没有发生过经历。
+    如果调用方指定了 thread_id，统计只针对该对话线程。
+    """
+    clauses = []
+    params: list[Any] = []
+    if thread_id is not None and str(thread_id).strip():
+        clauses.append("thread_id = ?")
+        params.append(str(thread_id).strip())
+
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    ensure_experience_store()
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS count, MIN(occurred_at) AS earliest_at, "
+            "MAX(occurred_at) AS latest_at "
+            f"FROM experience_slices {where}",
+            params,
+        ).fetchone()
+
+    return {
+        "count": int(row["count"] or 0),
+        "earliest_at": row["earliest_at"],
+        "latest_at": row["latest_at"],
+    }
+
+
 def search_experience_slices(
     *,
     keyword: str | None = None,

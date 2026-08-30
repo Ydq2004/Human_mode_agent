@@ -12,6 +12,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from core.experience import create_agent_action, create_experience_slice
 from core.perception import create_perception_event
 from memory import experience_store, recall_tools
+from memory import sql_store
 from memory.experience_store import StoredExperienceSlice
 from memory.retrieval_engine import RetrievedMemory, RetrievalResult
 from memory.schema import MemoryEntity
@@ -43,6 +44,75 @@ def _stored(event_id: str, content: str) -> StoredExperienceSlice:
 
 
 class RecallToolTests(unittest.TestCase):
+    def test_tool_reports_actual_data_coverage(self):
+        with tempfile.TemporaryDirectory() as directory:
+            db_path = str(Path(directory) / "coverage.db")
+            first = _stored("evt-coverage-1", "较早经历")
+            second_event = create_perception_event(
+                source="user",
+                modality="text",
+                content="较晚经历",
+                event_id="evt-coverage-2",
+                occurred_at="2026-08-26T10:00:00",
+            )
+            second = StoredExperienceSlice(
+                experience=create_experience_slice(
+                    perception_event=second_event,
+                    perception_understanding={},
+                    activated_memory_refs=[],
+                    response_or_actions=[],
+                    observations=[],
+                    state_snapshot={"mood": 50},
+                ),
+                thread_id="thread-b",
+                event_sequence=1,
+                stored_at="2026-08-26T10:00:01",
+                schema_version=1,
+            )
+            with patch.object(experience_store, "SQLITE_DB_PATH", db_path), \
+                    patch.object(sql_store, "SQLITE_DB_PATH", db_path):
+                sql_store.create_tables()
+                experience_store.save_experience_slice(
+                    first.experience, thread_id="thread-a", event_sequence=1
+                )
+                experience_store.save_experience_slice(
+                    second.experience, thread_id="thread-b", event_sequence=1
+                )
+                with patch.object(
+                    recall_tools,
+                    "retrieve_memories",
+                    return_value=RetrievalResult(),
+                ):
+                    output = recall_tools.recall_memory.invoke(
+                        {"query": "较晚经历", "thread_id": "thread-b"}
+                    )
+
+            data = json.loads(output)
+            coverage = data["data_coverage"]
+            self.assertEqual(coverage["experience_slices"]["count"], 1)
+            self.assertEqual(
+                coverage["experience_slices"]["earliest_at"],
+                "2026-08-26T10:00:00",
+            )
+            self.assertEqual(
+                coverage["experience_slices"]["latest_at"],
+                "2026-08-26T10:00:00",
+            )
+
+    def test_recall_budget_blocks_eleventh_call(self):
+        with recall_tools.recall_call_budget(max_calls=10):
+            outputs = [
+                recall_tools.recall_memory.invoke({"query": "不存在"})
+                for _ in range(11)
+            ]
+
+        first_ten = [json.loads(item) for item in outputs[:10]]
+        eleventh = json.loads(outputs[10])
+        self.assertTrue(all(item["recall_call"]["status"] == "allowed" for item in first_ten))
+        self.assertEqual(first_ten[-1]["recall_call"]["count"], 10)
+        self.assertEqual(eleventh["result_status"], "call_limit_reached")
+        self.assertEqual(eleventh["recall_call"]["count"], 10)
+
     def test_tool_returns_memory_and_experience_without_writing(self):
         with tempfile.TemporaryDirectory() as directory:
             db_path = str(Path(directory) / "experience.db")

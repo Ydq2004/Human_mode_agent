@@ -340,6 +340,26 @@ def list_entities(memory_type: str | None = None) -> list[MemoryEntity]:
 
     return [row_to_entity(row) for row in rows]
 
+
+def get_memory_time_coverage() -> dict[str, object]:
+    """返回当前认知表实际记录的创建/修改时间范围。
+
+    这只是当前数据库的覆盖统计，不代表范围之外不存在个人认知。
+    """
+    # 与其他只读入口一致：首次使用时只补齐表结构，不改动已有实体。
+    create_tables()
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS count, MIN(created_at) AS earliest_at, "
+            "MAX(last_modified_at) AS latest_at FROM memory_entities"
+        ).fetchone()
+
+    return {
+        "count": int(row["count"] or 0),
+        "earliest_at": row["earliest_at"],
+        "latest_at": row["latest_at"],
+    }
+
 def add_alias(concept_id: str, alias: str) -> MemoryEntity | None:
     """给已有认知增加一个别名。"""
     entity = get_entity(concept_id)

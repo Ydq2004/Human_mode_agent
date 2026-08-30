@@ -7,16 +7,66 @@ MemoryEntity 检索和 ExperienceSlice 时间查询包装成模型可调用的�
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any
 
 from langchain_core.tools import tool
 
 from memory.experience_store import (
+    get_experience_time_coverage,
     search_experience_slices,
 )
 from memory.retrieval_engine import retrieve_memories
+from memory.sql_store import get_memory_time_coverage
 from memory.store_manager import read_entity
 from memory.experience_summary_store import list_summaries
+from config import RECALL_MAX_CALLS_PER_TURN
+
+
+_recall_budget: ContextVar[dict[str, int] | None] = ContextVar(
+    "recall_memory_budget",
+    default=None,
+)
+
+
+@contextmanager
+def recall_call_budget(max_calls: int = RECALL_MAX_CALLS_PER_TURN):
+    """为一次 Agent 回合建立独立的 recall_memory 调用计数。
+
+    ContextVar 只在当前调用链生效，因此不同事件、不同线程不会互相消耗
+    次数。工具被单独测试或由其他代码直接调用时没有预算上下文，仍保持
+    原来的只读查询行为；主循环会在 agent.invoke 外层建立预算。
+    """
+    if isinstance(max_calls, bool) or not isinstance(max_calls, int) or max_calls < 1:
+        raise ValueError("max_calls 必须是大于等于 1 的整数")
+
+    token = _recall_budget.set({"limit": max_calls, "count": 0})
+    try:
+        yield
+    finally:
+        _recall_budget.reset(token)
+
+
+def _consume_recall_call() -> tuple[bool, int, int | None]:
+    """消耗一次本轮配额，返回 (是否允许, 当前次数, 上限)。"""
+    budget = _recall_budget.get()
+    if budget is None:
+        return True, 0, None
+
+    if budget["count"] >= budget["limit"]:
+        return False, budget["count"], budget["limit"]
+
+    budget["count"] += 1
+    return True, budget["count"], budget["limit"]
+
+
+def _coverage(thread_id: str | None = None) -> dict[str, dict[str, Any]]:
+    """读取两个权威数据表的实际时间覆盖范围。"""
+    return {
+        "memory_entities": get_memory_time_coverage(),
+        "experience_slices": get_experience_time_coverage(thread_id=thread_id),
+    }
 
 
 def _entity_to_dict(entity: Any) -> dict[str, Any]:
@@ -98,8 +148,31 @@ def recall_memory(
 
     需要回忆过去时使用本工具。query 可写认知名称、事件中的具体内容，
     start_at/end_at 可限定时间，concept_id 可精确读取一个认知，
-    thread_id 可限定对话线程。工具不会创建、修改或删除任何记忆。
+    thread_id 可限定对话线程。返回的 summaries 只是定位信息；需要还原具体过程时，
+    应根据摘要的时间范围或 source_slice_ids 再查询 experiences。
+    返回的 data_coverage 是当前数据库实际记录的时间范围统计，不代表范围之外没有历史。
+    普通当前事件不需要调用本工具。工具不会创建、修改或删除任何记忆。
     """
+    allowed, call_count, call_limit = _consume_recall_call()
+    if not allowed:
+        return json.dumps(
+            {
+                "query": str(query or "").strip(),
+                "source_boundary": "只读；本轮主动回忆已达到代码设置的调用上限",
+                "memories": [],
+                "summaries": [],
+                "experiences": [],
+                "data_coverage": _coverage(),
+                "recall_call": {
+                    "status": "limit_reached",
+                    "count": call_count,
+                    "limit": call_limit,
+                },
+                "result_status": "call_limit_reached",
+            },
+            ensure_ascii=False,
+        )
+
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 50:
         return json.dumps({"error": "limit 必须是 1 到 50 的整数"}, ensure_ascii=False)
 
@@ -191,6 +264,12 @@ def recall_memory(
             "memories": memories,
             "summaries": summaries,
             "experiences": experiences,
+            "data_coverage": _coverage(thread_id),
+            "recall_call": {
+                "status": "allowed",
+                "count": call_count,
+                "limit": call_limit,
+            },
             "result_status": "found" if memories or summaries or experiences else "no_match",
         },
         ensure_ascii=False,

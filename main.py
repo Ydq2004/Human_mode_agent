@@ -45,7 +45,8 @@ from memory.experience_store import (
     get_next_event_sequence,
     save_experience_slice,
 )
-from memory.recall_tools import recall_memory
+from memory.recall_tools import recall_call_budget, recall_memory
+from memory.summary_scheduler import generate_missing_period_summaries
 from memory import commit_store
 
 
@@ -107,6 +108,46 @@ def _print_debug_timings(timings: dict | None) -> None:
             print(f"  - {label}：{value:.3f} 秒")
         else:
             print(f"  - {label}：{value}")
+
+
+def _compact_memory_refs(refs: list[dict] | None) -> list[dict]:
+    """只显示自然唤起认知的定位信息，避免把长摘要重复刷到终端。"""
+    compact = []
+    for ref in refs or []:
+        if not isinstance(ref, dict):
+            continue
+        compact.append({
+            "concept_id": ref.get("concept_id"),
+            "canonical_name": ref.get("canonical_name"),
+            "memory_type": ref.get("memory_type"),
+            "emotion_label": ref.get("emotion_label"),
+            "emotion_score": ref.get("emotion_score"),
+            "retrieval_sources": ref.get("retrieval_sources") or [],
+        })
+    return compact
+
+
+def _compact_experience_debug(experience_slice) -> dict:
+    """显示 ExperienceSlice 的保存确认，不展开其中的大段工具结果。"""
+    event = experience_slice.perception_event
+    actions = list(experience_slice.response_or_actions or ())
+    observations = list(experience_slice.observations or ())
+    return {
+        "saved": True,
+        "slice_id": experience_slice.slice_id,
+        "event_id": event.event_id,
+        "occurred_at": event.occurred_at,
+        "content_length": len(event.content),
+        "action_count": len(actions),
+        "tool_call_count": sum(
+            action.action_type == "tool_call" for action in actions
+        ),
+        "observation_count": len(observations),
+        "tool_result_count": sum(
+            observation.modality == "memory_recall_result"
+            for observation in observations
+        ),
+    }
 
 def _build_persona_context(persona: dict) -> dict:
     """
@@ -406,10 +447,13 @@ def process_perception_event(
         # PerceptionEvent 是框架里的真实感知事件；
         # 这里仅把它转换成模型供应商能够接收的消息格式。
         model_message = perception_event_to_model_message(event)
-        result = agent.invoke(
-            {"messages": [model_message]},
-            config=agent_config,
-        )
+        # 主 Agent 的主动回忆次数属于“单轮”运行状态，
+        # 必须在本次 invoke 外层建立预算，不能使用跨轮累加的全局计数。
+        with recall_call_budget():
+            result = agent.invoke(
+                {"messages": [model_message]},
+                config=agent_config,
+            )
 
         final_message = result["messages"][-1]
         visible_reply = final_message.content
@@ -519,19 +563,15 @@ def _print_frontend_debug(result: dict) -> None:
     memory_refs = context_result.get("activated_memory_refs") or []
     _print_debug_value(
         f"本轮自然浮现的认知（{len(memory_refs)} 条）",
-        memory_refs,
+        _compact_memory_refs(memory_refs),
     )
     _print_debug_value(
         "认知唤起状态",
         context_result.get("memory_activation_state"),
     )
     _print_debug_value(
-        "检索详情",
-        context_result.get("retrieval_debug"),
-    )
-    _print_debug_value(
-        "ExperienceSlice（完整结构）",
-        experience_slice.to_dict(),
+        "ExperienceSlice（已保存，终端摘要）",
+        _compact_experience_debug(experience_slice),
     )
 
     job_view = {
@@ -720,6 +760,17 @@ def main():
     # 只创建新记忆系统的结构表。
     # 不再调用旧的 Chroma-only genesis memory。
     ensure_memory_store()
+
+    # 启动时补齐昨天、上周和上月的派生摘要。它只读 SQLite、
+    # 不调用 LLM；摘要失败不能阻塞主 Agent 启动，原始经历仍然保留。
+    try:
+        generated_summaries = generate_missing_period_summaries(
+            thread_id=DEFAULT_THREAD_ID,
+        )
+        if generated_summaries:
+            print("情景摘要已补齐")
+    except Exception as exc:
+        print(f"情景摘要检查失败（不影响聊天）：{exc}")
 
     # 只注册只读回忆工具。长期认知的创建、更新和删除仍只能由 Step 6
     # 的后台提交链执行，Agent 不能通过工具绕过身份裁决直接写库。

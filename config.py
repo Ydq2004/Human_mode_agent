@@ -45,6 +45,17 @@ RETRIEVAL_K = 5
 # Agent 必须根据已经拿到的结果回答，不能继续扩大查询。
 RECALL_MAX_CALLS_PER_TURN = 10
 
+# ========== SQLite/Chroma 索引修复 ==========
+# SQLite 是认知事实来源，Chroma 只是可重建的检索索引。
+# 单个修复任务最多尝试这么多次；达到上限后进入 exhausted，等待人工处理，
+# 防止网络或磁盘故障时后台线程无限重试。
+VECTOR_REPAIR_MAX_ATTEMPTS = 3
+# 失败后多久再尝试。设为 0 可在测试或本地开发时立即重试。
+VECTOR_REPAIR_RETRY_DELAY_SECONDS = 60.0
+# 后台修复线程的检查间隔和单次处理上限。
+VECTOR_REPAIR_INTERVAL_SECONDS = 300.0
+VECTOR_REPAIR_BATCH_SIZE = 10
+
 
 # ========== 情绪运行状态 ==========
 MOOD_MIN = 0
@@ -201,6 +212,10 @@ WORKING_CONTEXT_MAX_SUMMARY_CHARS = 12000
 WORKING_CONTEXT_LLM_TIMEOUT_SECONDS = 70.0
 WORKING_CONTEXT_LLM_TEMPERATURE = 0.1
 WORKING_CONTEXT_LLM_MAX_TOKENS = 2048
+
+# 启动时只自动恢复最近一段时间内、评价结果完整且仍等待提交的任务。
+# 太旧的任务不会被静默重放，需通过 recover_commit_ledger.py 人工处理。
+COMMIT_RECOVERY_MAX_AGE_HOURS = 24.0
 
 # 每轮动态上下文最多带入每种时间尺度的一份“最近可用摘要”。
 # 这些摘要来自 ExperienceSlice，只是背景索引；需要完整过程时仍调用 recall_memory。

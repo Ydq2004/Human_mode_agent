@@ -96,7 +96,7 @@ PerceptionEvent
 
 已补齐：
 
-- `memory/vector_repair_store.py` 创建 `vector_repair_queue`，保存实体、操作、失败原因、尝试次数和状态。`memory/store_manager.py` 在 SQLite 成功而 Chroma 失败时记录任务并继续抛出原始异常；`repair_pending_vectors()` 会重新读取 SQLite 当前实体后显式重建索引。它不会自动无限重试，也不会把失败伪装成完整提交成功。
+- `memory/vector_repair_store.py` 创建 `vector_repair_queue`，保存实体、操作、失败原因、尝试次数、最后尝试时间和下一次重试时间。达到最大尝试次数后进入 `exhausted`，不再自动重试。`memory/store_manager.py` 在 SQLite 成功而 Chroma 失败时记录任务并继续抛出原始异常；`inspect_vector_consistency()` 会发现双向 id 差异，SQLite 缺失的索引自动入队，Chroma 孤立 id 只报告不删除；`repair_pending_vectors()` 重新读取 SQLite 当前实体后重建索引。`core/vector_repair_worker.py` 负责启动后和运行期间的低频、有界修复。
 
 - `emotion.appraisal_rules.compute_committed_mood_change` 负责纯规则计算：只有 `mood_impact == 0` 时向 `MOOD_BASELINE` 回归一步；非零冲击不叠加回归，基线处保持不变。
 - `emotion.manager.commit_mood_effect` 在同一个 SQLite 事务中写入最终 mood，避免先写入零变化再单独回归的中间状态。
@@ -385,8 +385,13 @@ ExperienceSlice 完整记录：
 当前 `commit_ledger` 只在 appraisal 进入终态后写入记录，因此不能把账本中不存在的
 `appraisal_status=pending` 任务假装恢复。第一步只恢复已有可靠结果：
 
-当前进度：**2.1 已完成，2.2 尚未开始**。`commit_store` 已提供可恢复候选查询和明确的
-`abandoned` 收口接口；自动重投仍需先补齐任务输入和事件顺序恢复协议。
+当前进度：**2.1 和 2.2 已完成，真正的 pending appraisal 恢复尚未开始**。`commit_store`
+已提供可恢复候选查询、事件证据保存和明确的 `abandoned` 收口接口；启动流程会恢复
+唯一、未过期、评价结果完整且事件序号没有缺口的等待提交任务。真正的 pending appraisal
+恢复仍需先补齐可重建任务输入。
+
+审核补充：序号缺口判断会把已进入终态的中间序号视为已知，不会误阻塞后续等待任务；
+无法从 ExperienceSlice 重建的等待任务会在启动时保留原因并标记为 `abandoned`，不再反复尝试。
 
 - `appraisal_status=completed` 且 `commit_status=waiting`：重新交给 `CommitWorker`，提交函数必须保持幂等。
 - `commit_status=committing`：启动时先根据结构化主库检查是否已经产生写入，再决定继续提交或标记为 `abandoned`。
@@ -397,9 +402,12 @@ ExperienceSlice 完整记录：
 
 ### 阶段 3：SQLite/Chroma 一致性修复增强（P0）
 
-- SQLite 仍是唯一事实来源；SQLite 中有而 Chroma 缺失的实体进入有界重试队列。
+- 当前进度：**第一版已完成并通过定向测试**。
+- `inspect_vector_consistency()` 会比较两边的 `concept_id`；SQLite 中有而 Chroma 缺失的实体进入有界 `upsert` 修复队列。
 - Chroma 中有而 SQLite 缺失的记录只标记为孤立索引并报告，不自动删除事实或索引。
-- 自动修复必须有最大尝试次数、失败原因和下一次可重试时间，禁止无限重试。
+- `vector_repair_queue` 保存最后尝试时间和下一次重试时间；达到 `VECTOR_REPAIR_MAX_ATTEMPTS` 后进入 `exhausted`，禁止无限重试。
+- `VectorRepairWorker` 在主程序中以独立后台线程启动，先检查一次，之后按 `VECTOR_REPAIR_INTERVAL_SECONDS` 和 `VECTOR_REPAIR_BATCH_SIZE` 周期运行；异常只记录，不阻塞主 Agent。
+- 仍需在真实运行中观察修复线程日志和网络故障后的恢复效果；本阶段没有自动删除孤立 Chroma 索引。
 
 ### 阶段 4：情景摘要可靠性（P1）
 

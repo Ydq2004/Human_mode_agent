@@ -6,7 +6,7 @@
 
 本文件只记录已经通过代码或实际运行确认、但明确延后到 Step 6 稳定之后处理的问题。
 
-Step 6 的进程内有序写入闭环已经通过自动化测试和真实 LLM 开放验收。当前施工主线已经切换为持久化不可变 `ExperienceSlice`；其他能力继续按优先级排队，不与经历存储混在同一个改动中。
+Step 6 的进程内有序写入闭环已经通过自动化测试和真实 LLM 开放验收。阶段 2.2 的启动恢复审核问题已修正；当前施工主线切换为 SQLite/Chroma 一致性修复，其他能力继续按优先级排队，不与经历存储混在同一个改动中。
 
 ## 已确定的总体顺序
 
@@ -96,12 +96,12 @@ Step 6 有序写入稳定
 ### 已确认事实
 
 - 当前已经有 `experience_slices` SQLite 表、追加式写入和按 id/时间范围/线程读取，也已经有 `commit_ledger` 记录 appraisal/commit 状态。
-- SQLite/Chroma 不一致时的持久修复队列已完成第一版：`vector_repair_queue` 会记录实体、操作、失败原因和尝试次数；任务仍不会自动在后台无限重试。
+- SQLite/Chroma 不一致时的持久修复队列已完成阶段 3 第一版：`vector_repair_queue` 会记录实体、操作、失败原因、尝试次数、最后尝试时间和下一次重试时间；达到最大次数后进入 `exhausted`，不再自动重试。
 - checkpoint 只包含 Agent 运行状态，不能完整替代感知、状态快照、检索引用、行动和观察组成的经历切片。
 
 ### 处理要求
 
-- 继续完善追加式、不可变的经历存储验收。向量修复可由 `memory.store_manager.repair_pending_vectors()` 显式触发；修复时重新读取 SQLite 当前实体，不使用旧快照覆盖权威事实。
+- 继续完善追加式、不可变的经历存储验收。向量修复可由 `memory.store_manager.repair_pending_vectors()` 显式触发，也由 `core.vector_repair_worker.VectorRepairWorker` 低频按批次执行；修复时重新读取 SQLite 当前实体，不使用旧快照覆盖权威事实。
 - 至少保存 `slice_id`、`event_id`、事件时间、感知来源、理解结果、检索引用、`action_id`、`observation_id`、状态快照和完成时间。
 - 原始经历不得被摘要覆盖；更正应通过新记录或明确版本关系表达。
 - 写入必须使用稳定 id 幂等，避免重启或重试制造重复经历。
@@ -118,12 +118,22 @@ SQLite 写入成功
 
 这表示“结构化认知已经保存，但检索索引暂时不可用”，不是完整提交成功。后续显式调用修复函数后，任务才会进入 `repaired`。
 
+### 阶段 3 新增的一致性检查
+
+- `memory.store_manager.inspect_vector_consistency()` 比较两边的 `concept_id`。
+- SQLite 有而 Chroma 没有：自动加入 `upsert` 修复队列。
+- Chroma 有而 SQLite 没有：只返回 `orphaned_in_chroma` 报告，不自动删除。
+- `VectorRepairWorker` 启动后先检查一次，之后按配置间隔运行；单次最多处理 `VECTOR_REPAIR_BATCH_SIZE` 条任务。
+- `mark_failed()` 根据 `VECTOR_REPAIR_MAX_ATTEMPTS` 和 `VECTOR_REPAIR_RETRY_DELAY_SECONDS` 安排重试；耗尽后保留 `exhausted` 记录，后续需人工查看。
+
 ### 验收条件
 
 - 进程重启后能够按 id、时间范围和线程读取完整 ExperienceSlice。
 - 同一 `thread_id` 的新进程会从 SQLite 中已有的最大 `event_sequence` 之后继续取号；`event_id` 仍是每个事件的永久唯一身份。
 - 同一事件重复提交不会产生两份原始经历。
 - 摘要、人格证据和认知候选都能保存并校验来源 slice id。
+- 一致性检查能发现双向 id 差异；孤立 Chroma id 不会被自动删除。
+- 修复任务达到重试上限后停止自动执行，并能看到最后错误和时间。
 
 ## P1：事件时间已保存，并已完成模型输入渲染
 
@@ -275,8 +285,9 @@ MemoryEntity 的 `created_at` 和 `last_mentioned_at` 只负责告诉 Agent “�
 当前账本由 `record_appraisal_terminal()` 在 appraisal 完成或失败后写入，尚未记录真正的 pending appraisal。
 因此不能直接把所有“未完成”任务重跑。
 
-当前进度：**2.1 已完成，2.2 尚未开始**。已经加入可恢复候选查询和明确的 `abandoned` 标记工具；
-自动重投需要等任务输入和事件顺序恢复协议补齐后再接入。
+当前进度：**2.1 和 2.2 已完成，真正的 pending appraisal 恢复尚未开始**。已经加入可恢复候选查询、
+事件证据保存、启动恢复计划、提交序号跳过和明确的 `abandoned` 标记工具。启动只自动重投唯一、
+未过期、评价结果完整且没有序号缺口的等待提交任务；真正的 pending appraisal 恢复仍需先保存可重建输入。
 
 施工边界：
 

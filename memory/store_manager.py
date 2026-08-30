@@ -8,6 +8,7 @@ from memory.sql_store import (
     create_tables,
     delete_entity as sql_delete_entity,
     get_entity,
+    list_entities,
     search_by_name_or_alias,
     upsert_entity as sql_upsert_entity,
     update_entity_content as sql_update_entity_content,
@@ -20,6 +21,7 @@ from memory.vector_repair_store import (
     mark_attempt as mark_vector_repair_attempt,
     mark_failed as mark_vector_repair_failed,
     mark_repaired as mark_vector_repair_repaired,
+    is_retry_due as is_vector_repair_due,
 )
 
 
@@ -249,6 +251,15 @@ def repair_pending_vectors(limit: int | None = None) -> list[dict[str, Any]]:
     ensure_memory_store()
     results = []
     for task in list_pending_vector_repairs(limit):
+        if not is_vector_repair_due(task):
+            results.append(
+                {
+                    "repair_id": task["repair_id"],
+                    "status": "deferred",
+                    "next_retry_at": task.get("next_retry_at"),
+                }
+            )
+            continue
         repair_id = task["repair_id"]
         mark_vector_repair_attempt(repair_id)
         try:
@@ -266,3 +277,43 @@ def repair_pending_vectors(limit: int | None = None) -> list[dict[str, Any]]:
                 {"repair_id": repair_id, "status": "failed", "error": error}
             )
     return results
+
+
+def inspect_vector_consistency() -> dict[str, list[str]]:
+    """比较 SQLite 和 Chroma 的 id，并为 SQLite 缺失的索引排入修复队列。
+
+    SQLite 是事实来源：
+    - SQLite 有、Chroma 没有：可以安全地按当前实体重建，自动入队。
+    - Chroma 有、SQLite 没有：这是孤立索引，只报告，不自动删除，避免误删。
+    """
+    ensure_memory_store()
+    sqlite_entities = list_entities()
+    sqlite_ids = {entity.concept_id for entity in sqlite_entities}
+    raw = vector_db.get()
+    raw_ids = raw.get("ids", []) if isinstance(raw, dict) else []
+    chroma_ids = {
+        str(item)
+        for item in raw_ids
+        if isinstance(item, str) and item.strip()
+    }
+
+    missing_in_chroma = sorted(sqlite_ids - chroma_ids)
+    orphaned_in_chroma = sorted(chroma_ids - sqlite_ids)
+    queued_repairs: list[str] = []
+    entities_by_id = {entity.concept_id: entity for entity in sqlite_entities}
+    for concept_id in missing_in_chroma:
+        entity = entities_by_id[concept_id]
+        queued_repairs.append(
+            enqueue_vector_repair(
+                concept_id,
+                "upsert",
+                entity_snapshot=_entity_snapshot(entity),
+                error="一致性检查发现 SQLite 有实体但 Chroma 缺少索引",
+            )
+        )
+
+    return {
+        "missing_in_chroma": missing_in_chroma,
+        "orphaned_in_chroma": orphaned_in_chroma,
+        "queued_repairs": queued_repairs,
+    }

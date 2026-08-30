@@ -74,6 +74,7 @@ def ensure_commit_ledger() -> None:
                 appraisal_status TEXT NOT NULL,
                 appraisal_json TEXT,
                 effects_json TEXT,
+                event_evidence_json TEXT,
                 commit_status TEXT NOT NULL,
                 commit_result_json TEXT,
                 error TEXT,
@@ -84,6 +85,14 @@ def ensure_commit_ledger() -> None:
             )
             """
         )
+        columns = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(commit_ledger)")
+        }
+        if "event_evidence_json" not in columns:
+            conn.execute(
+                "ALTER TABLE commit_ledger ADD COLUMN event_evidence_json TEXT"
+            )
         if existing_schema is not None and "commit_ledger_legacy" in {
             row[0]
             for row in conn.execute(
@@ -125,7 +134,8 @@ def record_appraisal_terminal(job: dict[str, Any]) -> None:
     ensure_commit_ledger()
     with _connect() as conn:
         existing = conn.execute(
-            "SELECT appraisal_json, effects_json, appraisal_status "
+            "SELECT appraisal_json, effects_json, event_evidence_json, "
+            "appraisal_status "
             "FROM commit_ledger WHERE job_id = ?",
             (job["job_id"],),
         ).fetchone()
@@ -139,6 +149,7 @@ def record_appraisal_terminal(job: dict[str, Any]) -> None:
             _json(job.get("appraisal")),
             _json(job.get("effects")),
             "waiting",
+            _json(job.get("event_evidence")),
             None,
             job.get("error"),
             str(job.get("submitted_at") or _now()),
@@ -150,6 +161,7 @@ def record_appraisal_terminal(job: dict[str, Any]) -> None:
             if (
                 existing["appraisal_json"] != values[6]
                 or existing["effects_json"] != values[7]
+                or existing["event_evidence_json"] != values[9]
                 or existing["appraisal_status"] != status
             ):
                 raise ValueError(f"job_id {job['job_id']} 的评价结果不一致")
@@ -160,9 +172,10 @@ def record_appraisal_terminal(job: dict[str, Any]) -> None:
             INSERT INTO commit_ledger (
                 job_id, experience_slice_id, event_id, event_sequence, thread_id,
                 appraisal_status, appraisal_json, effects_json, commit_status,
-                commit_result_json, error, submitted_at, appraisal_completed_at,
+                event_evidence_json, commit_result_json, error, submitted_at,
+                appraisal_completed_at,
                 commit_started_at, commit_completed_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             values,
         )
@@ -212,10 +225,33 @@ def list_unfinished_commits() -> list[dict[str, Any]]:
     return [_decode_ledger_row(row) for row in rows]
 
 
+def list_commit_records(*, thread_id: str | None = None) -> list[dict[str, Any]]:
+    """读取指定线程的完整账本，供启动恢复判断事件序号状态。"""
+    ensure_commit_ledger()
+    clauses = []
+    params: list[Any] = []
+    if thread_id is not None and str(thread_id).strip():
+        clauses.append("thread_id = ?")
+        params.append(str(thread_id).strip())
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM commit_ledger "
+            f"{where} ORDER BY event_sequence, submitted_at, job_id",
+            params,
+        ).fetchall()
+    return [_decode_ledger_row(row) for row in rows]
+
+
 def _decode_ledger_row(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
     """把账本 JSON 字段恢复成 Python 对象，供恢复工具和调度器使用。"""
     item = dict(row)
-    for key in ("appraisal_json", "effects_json", "commit_result_json"):
+    for key in (
+        "appraisal_json",
+        "effects_json",
+        "event_evidence_json",
+        "commit_result_json",
+    ):
         raw = item.get(key)
         if raw is None:
             item[key] = None
@@ -265,19 +301,37 @@ def list_recoverable_commits(
         ).fetchall()
 
     decoded = [_decode_ledger_row(row) for row in rows]
-    if max_age_hours is None:
-        return decoded
-
-    reference = now or datetime.now()
-    cutoff = reference - timedelta(hours=float(max_age_hours))
+    cutoff = None
+    if max_age_hours is not None:
+        reference = now or datetime.now()
+        cutoff = reference - timedelta(hours=float(max_age_hours))
     output = []
+    # 同一事件序号只能有一个自动恢复候选；如果该序号已经有终态记录，
+    # 说明它可能是旧进程重复留下的记录，不能再次写入。
+    all_records = list_commit_records(thread_id=thread_id)
+    terminal_sequences = {
+        int(item["event_sequence"])
+        for item in all_records
+        if item.get("commit_status") in {"committed", "commit_failed", "abandoned"}
+    }
+    seen_sequences: set[int] = set()
     for item in decoded:
+        sequence = item.get("event_sequence")
+        if not isinstance(sequence, int) or sequence in terminal_sequences:
+            continue
+        if sequence in seen_sequences:
+            continue
+        if not isinstance(item.get("appraisal_json"), dict):
+            continue
+        if not isinstance(item.get("effects_json"), dict):
+            continue
         try:
             submitted_at = datetime.fromisoformat(str(item["submitted_at"]))
         except (KeyError, TypeError, ValueError):
             # 时间损坏时不自动恢复，交给人工处理，避免错误任务被误重放。
             continue
-        if submitted_at >= cutoff:
+        if cutoff is None or submitted_at >= cutoff:
+            seen_sequences.add(sequence)
             output.append(item)
     return output
 

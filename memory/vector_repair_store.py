@@ -8,17 +8,22 @@ import hashlib
 import json
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterator
 
-from config import SQLITE_DB_PATH
+from config import (
+    SQLITE_DB_PATH,
+    VECTOR_REPAIR_MAX_ATTEMPTS,
+    VECTOR_REPAIR_RETRY_DELAY_SECONDS,
+)
 
 
 PENDING = "pending"
 REPAIRING = "repairing"
 REPAIRED = "repaired"
 FAILED = "failed"
+EXHAUSTED = "exhausted"
 
 
 @contextmanager
@@ -54,11 +59,25 @@ def ensure_table() -> None:
                 status TEXT NOT NULL,
                 attempt_count INTEGER NOT NULL DEFAULT 0,
                 last_error TEXT,
+                last_attempt_at TEXT,
+                next_retry_at TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             )
             """
         )
+        columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(vector_repair_queue)")
+        }
+        if "last_attempt_at" not in columns:
+            conn.execute(
+                "ALTER TABLE vector_repair_queue ADD COLUMN last_attempt_at TEXT"
+            )
+        if "next_retry_at" not in columns:
+            conn.execute(
+                "ALTER TABLE vector_repair_queue ADD COLUMN next_retry_at TEXT"
+            )
         conn.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_vector_repair_queue_status
@@ -98,13 +117,15 @@ def enqueue(
             """
             INSERT INTO vector_repair_queue (
                 repair_id, concept_id, operation, entity_snapshot_json,
-                status, attempt_count, last_error, created_at, updated_at
+                status, attempt_count, last_error, last_attempt_at, next_retry_at,
+                created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, 0, ?, NULL, NULL, ?, ?)
             ON CONFLICT(repair_id) DO UPDATE SET
                 entity_snapshot_json=excluded.entity_snapshot_json,
                 status=? ,
                 last_error=excluded.last_error,
+                next_retry_at=NULL,
                 updated_at=excluded.updated_at
             """,
             (
@@ -122,16 +143,24 @@ def enqueue(
     return repair_id
 
 
-def list_pending(limit: int | None = None) -> list[dict[str, Any]]:
-    """读取待处理任务；不改变任务状态。"""
+def list_pending(
+    limit: int | None = None,
+    *,
+    include_exhausted: bool = False,
+) -> list[dict[str, Any]]:
+    """读取待处理任务；可选包含达到重试上限的任务供人工查看。"""
     ensure_table()
+    statuses = [PENDING, FAILED, REPAIRING]
+    if include_exhausted:
+        statuses.append(EXHAUSTED)
     query = (
         "SELECT * FROM vector_repair_queue "
-        "WHERE status IN (?, ?, ?) ORDER BY updated_at, repair_id"
+        f"WHERE status IN ({', '.join('?' for _ in statuses)}) "
+        "ORDER BY updated_at, repair_id"
     )
     # REPAIRING 也要读出来：如果程序正好在修复中崩溃，重启后不能把任务
     # 永久留在“正在修复”状态。
-    params: list[Any] = [PENDING, FAILED, REPAIRING]
+    params: list[Any] = statuses
     if limit is not None:
         limit = max(0, int(limit))
         query += " LIMIT ?"
@@ -157,14 +186,16 @@ def list_pending(limit: int | None = None) -> list[dict[str, Any]]:
 def mark_attempt(repair_id: str) -> bool:
     """把任务标成正在修复，并把尝试次数加一。"""
     ensure_table()
+    now = _now()
     with _connect() as conn:
         cursor = conn.execute(
             """
             UPDATE vector_repair_queue
-            SET status=?, attempt_count=attempt_count + 1, updated_at=?
+            SET status=?, attempt_count=attempt_count + 1,
+                last_attempt_at=?, updated_at=?
             WHERE repair_id=? AND status IN (?, ?, ?)
             """,
-            (REPAIRING, _now(), repair_id, PENDING, FAILED, REPAIRING),
+            (REPAIRING, now, now, repair_id, PENDING, FAILED, REPAIRING),
         )
     return cursor.rowcount > 0
 
@@ -176,7 +207,7 @@ def mark_repaired(repair_id: str) -> bool:
         cursor = conn.execute(
             """
             UPDATE vector_repair_queue
-            SET status=?, last_error=NULL, updated_at=?
+            SET status=?, last_error=NULL, next_retry_at=NULL, updated_at=?
             WHERE repair_id=?
             """,
             (REPAIRED, _now(), repair_id),
@@ -184,16 +215,68 @@ def mark_repaired(repair_id: str) -> bool:
     return cursor.rowcount > 0
 
 
-def mark_failed(repair_id: str, error: str) -> bool:
-    """本次重试仍失败，保留错误并等待下一次修复。"""
+def mark_failed(
+    repair_id: str,
+    error: str,
+    *,
+    retry_delay_seconds: float = VECTOR_REPAIR_RETRY_DELAY_SECONDS,
+    max_attempts: int = VECTOR_REPAIR_MAX_ATTEMPTS,
+) -> bool:
+    """记录失败；达到上限后停止自动重试，否则安排下一次时间。"""
+    if (
+        isinstance(retry_delay_seconds, bool)
+        or not isinstance(retry_delay_seconds, (int, float))
+        or retry_delay_seconds < 0
+    ):
+        raise ValueError("retry_delay_seconds 必须是非负数字")
+    if (
+        isinstance(max_attempts, bool)
+        or not isinstance(max_attempts, int)
+        or max_attempts < 1
+    ):
+        raise ValueError("max_attempts 必须是正整数")
+    now = datetime.now()
+    next_retry = now + timedelta(seconds=float(retry_delay_seconds))
     ensure_table()
     with _connect() as conn:
+        row = conn.execute(
+            "SELECT attempt_count FROM vector_repair_queue WHERE repair_id=?",
+            (repair_id,),
+        ).fetchone()
+        if row is None:
+            return False
+        status = (
+            EXHAUSTED
+            if int(row["attempt_count"] or 0) >= max_attempts
+            else FAILED
+        )
         cursor = conn.execute(
             """
             UPDATE vector_repair_queue
-            SET status=?, last_error=?, updated_at=?
+            SET status=?, last_error=?, next_retry_at=?, updated_at=?
             WHERE repair_id=?
             """,
-            (FAILED, str(error), _now(), repair_id),
+            (
+                status,
+                str(error),
+                None if status == EXHAUSTED else next_retry.isoformat(),
+                now.isoformat(),
+                repair_id,
+            ),
         )
     return cursor.rowcount > 0
+
+
+def is_retry_due(task: dict[str, Any], *, now: datetime | None = None) -> bool:
+    """判断失败任务是否到达下一次重试时间；崩溃遗留的 repairing 可立即接管。"""
+    if task.get("status") in {PENDING, REPAIRING}:
+        return True
+    if task.get("status") != FAILED:
+        return False
+    retry_at = task.get("next_retry_at")
+    if not retry_at:
+        return True
+    try:
+        return datetime.fromisoformat(str(retry_at)) <= (now or datetime.now())
+    except ValueError:
+        return False

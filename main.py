@@ -12,7 +12,11 @@ from copy import deepcopy
 from textwrap import indent
 from time import perf_counter
 
-from config import DEFAULT_THREAD_ID, MAX_RECENT_TURN
+from config import (
+    COMMIT_RECOVERY_MAX_AGE_HOURS,
+    DEFAULT_THREAD_ID,
+    MAX_RECENT_TURN,
+)
 
 from core.model_io import (
     perception_event_to_model_message,
@@ -24,6 +28,7 @@ from core.agent_factory import (
 )
 from core.appraisal_worker import AppraisalWorker
 from core.commit_worker import CommitTask, CommitWorker
+from core.vector_repair_worker import VectorRepairWorker
 from core.memory_commit import MemoryCommitService
 from core.context_builder import build_agent_context
 from core.experience import (
@@ -39,9 +44,12 @@ from emotion.manager import begin_perception_event
 from emotion.models import ensure_emotion_store
 from memory.store_manager import (
     ensure_memory_store,
+    inspect_vector_consistency,
     initialize_genesis_memory,
+    repair_pending_vectors,
 )
 from memory.experience_store import (
+    get_experience_slice,
     get_next_event_sequence,
     save_experience_slice,
 )
@@ -729,6 +737,104 @@ def _record_and_submit_commit(
     ))
 
 
+def _rebuild_recovered_commit_task(row: dict) -> CommitTask | None:
+    """从账本和不可变经历重建一个可提交任务；缺数据时安全跳过。"""
+    appraisal = row.get("appraisal_json")
+    effects = row.get("effects_json")
+    if not isinstance(appraisal, dict) or not isinstance(effects, dict):
+        return None
+
+    stored = get_experience_slice(str(row.get("experience_slice_id") or ""))
+    if stored is None:
+        return None
+    experience = stored.experience
+    event_evidence = {
+        "perception_event": experience.perception_event.to_dict(),
+        "response_or_actions": [
+            action.to_dict() for action in experience.response_or_actions
+        ],
+        "observations": [
+            observation.to_dict() for observation in experience.observations
+        ],
+    }
+    appraisal_job = {
+        "job_id": row["job_id"],
+        "event_id": row["event_id"],
+        "experience_slice_id": row["experience_slice_id"],
+        "event_sequence": row["event_sequence"],
+        "thread_id": row["thread_id"],
+        "status": "completed",
+        "appraisal": appraisal,
+        "effects": effects,
+        "event_evidence": event_evidence,
+        "submitted_at": row.get("submitted_at"),
+        "completed_at": row.get("appraisal_completed_at"),
+    }
+    return CommitTask(
+        job_id=str(row["job_id"]),
+        event_sequence=int(row["event_sequence"]),
+        thread_id=str(row["thread_id"]),
+        appraisal_job=appraisal_job,
+    )
+
+
+def _prepare_commit_recovery(
+    *,
+    thread_id: str,
+    next_event_sequence: int,
+) -> tuple[list[CommitTask], int, set[int], list[str]]:
+    """生成启动恢复计划，不执行任何写入。"""
+    records = commit_store.list_commit_records(thread_id=thread_id)
+    terminal_sequences = {
+        int(row["event_sequence"])
+        for row in records
+        if row.get("commit_status") in {"committed", "commit_failed", "abandoned"}
+    }
+    candidates = commit_store.list_recoverable_commits(
+        thread_id=thread_id,
+        max_age_hours=COMMIT_RECOVERY_MAX_AGE_HOURS,
+    )
+    notes: list[str] = []
+    tasks: list[CommitTask] = []
+    seen_sequences: set[int] = set()
+    for row in candidates:
+        sequence = int(row["event_sequence"])
+        if sequence in terminal_sequences or sequence in seen_sequences:
+            continue
+        task = _rebuild_recovered_commit_task(row)
+        if task is None:
+            reason = "无法从 ExperienceSlice 重建恢复任务"
+            # 这类任务以后也无法靠重复启动自动修好。保留账本记录并
+            # 明确收口为 abandoned，避免每次启动都重复尝试同一坏任务。
+            commit_store.mark_commit_abandoned(row["job_id"], reason)
+            terminal_sequences.add(sequence)
+            notes.append(f"{row['job_id']}: {reason}，已标记 abandoned")
+            continue
+        seen_sequences.add(sequence)
+        tasks.append(task)
+
+    if not tasks:
+        return [], next_event_sequence, terminal_sequences, notes
+
+    # 恢复旧序号前，必须确认中间每个序号都有终态或恢复任务；否则提交线程
+    # 会因未知缺口等待，宁可本次不自动恢复。
+    start_sequence = min(task.event_sequence for task in tasks)
+    known = terminal_sequences | seen_sequences
+    missing = [
+        sequence
+        for sequence in range(start_sequence, next_event_sequence)
+        if sequence not in known
+    ]
+    if missing:
+        for task in tasks:
+            notes.append(
+                f"{task.job_id}: 事件序号存在缺口 {missing[:5]}，本次未自动恢复"
+            )
+        return [], next_event_sequence, terminal_sequences, notes
+
+    return tasks, start_sequence, terminal_sequences, notes
+
+
 def _consume_finished_commit_jobs(
     appraisal_worker: AppraisalWorker,
     commit_worker: CommitWorker,
@@ -741,11 +847,14 @@ def _consume_finished_commit_jobs(
             commit_worker.release_delivery(job["job_id"])
             raise
 
-        if not appraisal_worker.acknowledge(job["job_id"]):
-            commit_worker.release_delivery(job["job_id"])
-            raise RuntimeError(
-                f"无法释放评价任务：{job['job_id']}"
-            )
+        # 普通任务同时存在于 appraisal_worker；跨进程恢复任务只存在于
+        # commit_worker，因此后者没有可释放的内存评价记录。
+        if appraisal_worker.snapshot(job["job_id"]) is not None:
+            if not appraisal_worker.acknowledge(job["job_id"]):
+                commit_worker.release_delivery(job["job_id"])
+                raise RuntimeError(
+                    f"无法释放评价任务：{job['job_id']}"
+                )
         if not commit_worker.acknowledge(job["job_id"]):
             raise RuntimeError(
                 f"无法释放提交任务：{job['job_id']}"
@@ -796,12 +905,24 @@ def main():
     # 否则“需要检索长期认知”的提示没有可命中的初始实体。
     initialize_genesis_memory(persona)
 
+    # 启动时先根据持久账本生成恢复计划。这里只恢复评价已完成、证据完整、
+    # 事件序号没有缺口的任务；评价失败或资料不全的任务不会被伪造重跑。
+    recovery_tasks, worker_start_sequence, processed_sequences, recovery_notes = (
+        _prepare_commit_recovery(
+            thread_id=thread_id,
+            next_event_sequence=next_event_sequence,
+        )
+    )
+    for note in recovery_notes:
+        print(f"提交恢复跳过：{note}")
+
     # 两个 worker 通过回调连接：评价完成后立即把“终态快照”交给提交 worker，
     # 不必等下一次用户输入时轮询。deepcopy 让下游拿到独立数据，不依赖上游内部对象。
     commit_worker = CommitWorker(
         MemoryCommitService(identity_llm=appraisal_llm),
         ledger=commit_store,
-        start_sequence=next_event_sequence,
+        start_sequence=worker_start_sequence,
+        processed_sequences=processed_sequences,
     )
     appraisal_worker = AppraisalWorker(
         appraisal_llm,
@@ -809,6 +930,20 @@ def main():
             job,
             commit_worker,
         ),
+    )
+    for task in recovery_tasks:
+        try:
+            commit_worker.submit(task)
+            print(f"已恢复提交任务：{task.job_id}")
+        except Exception as exc:
+            # 恢复任务提交失败不能阻塞启动；原账本仍保留 waiting，方便人工处理。
+            print(f"提交恢复失败：{task.job_id}：{exc}")
+
+    # Chroma 只是可重建索引。独立线程低频检查一致性并按批次修复，
+    # 不把网络/磁盘故障带进主 Agent 的前台请求。
+    vector_repair_worker = VectorRepairWorker(
+        inspect_vector_consistency,
+        repair_pending_vectors,
     )
     agent_config["configurable"]["thread_id"] = thread_id
     exit_command = persona.get("exit_command", "退出")
@@ -910,6 +1045,7 @@ def main():
             appraisal_worker,
             commit_worker,
         )
+        vector_repair_worker.shutdown(wait=True)
 
 if __name__ == "__main__":
     main()

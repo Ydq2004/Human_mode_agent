@@ -56,6 +56,26 @@ class VectorRepairStoreTests(unittest.TestCase):
         self.assertTrue(vector_repair_store.mark_repaired(repair_id))
         self.assertEqual(vector_repair_store.list_pending(), [])
 
+    def test_failed_task_records_attempt_times_and_stops_at_maximum(self):
+        repair_id = vector_repair_store.enqueue("concept-max", "upsert")
+        for attempt in range(2):
+            self.assertTrue(vector_repair_store.mark_attempt(repair_id))
+            self.assertTrue(
+                vector_repair_store.mark_failed(
+                    repair_id,
+                    f"失败 {attempt + 1}",
+                    retry_delay_seconds=3600,
+                    max_attempts=2,
+                )
+            )
+
+        row = vector_repair_store.list_pending(include_exhausted=True)[0]
+        self.assertEqual(row["status"], vector_repair_store.EXHAUSTED)
+        self.assertEqual(row["attempt_count"], 2)
+        self.assertIsNotNone(row["last_attempt_at"])
+        self.assertIsNone(row["next_retry_at"])
+        self.assertFalse(vector_repair_store.is_retry_due(row))
+
     def test_repairing_task_is_recoverable_after_restart(self):
         repair_id = vector_repair_store.enqueue("concept-1", "upsert")
         self.assertTrue(vector_repair_store.mark_attempt(repair_id))
@@ -119,6 +139,29 @@ class VectorRepairStoreTests(unittest.TestCase):
         self.assertEqual(result[0]["status"], "repaired")
         self.assertEqual(synced, ["最新摘要"])
         self.assertEqual(vector_repair_store.list_pending(), [])
+
+    def test_consistency_check_reports_orphans_and_queues_missing_indexes(self):
+        from memory import store_manager
+
+        entity = MemoryEntity(
+            concept_id="sqlite-only",
+            canonical_name="偏好",
+            aliases=["偏好"],
+            memory_type="preference",
+            identity_signature={"subject": "user"},
+            summary="用户喜欢水果",
+        )
+        with patch.object(store_manager, "create_tables"), \
+             patch.object(store_manager, "list_entities", return_value=[entity]), \
+             patch.object(store_manager, "vector_db") as vector_db:
+            vector_db.get.return_value = {"ids": ["chroma-only", "sqlite-only-2"]}
+            result = store_manager.inspect_vector_consistency()
+
+        self.assertEqual(result["missing_in_chroma"], ["sqlite-only"])
+        self.assertEqual(result["orphaned_in_chroma"], ["chroma-only", "sqlite-only-2"])
+        self.assertEqual(len(result["queued_repairs"]), 1)
+        pending = vector_repair_store.list_pending()
+        self.assertEqual(pending[0]["concept_id"], "sqlite-only")
 
 
 if __name__ == "__main__":

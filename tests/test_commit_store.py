@@ -20,6 +20,7 @@ class CommitStoreTests(unittest.TestCase):
                 "status": "completed",
                 "appraisal": {"memory_assessment": {"memory_candidates": []}},
                 "effects": {"mood": {"mood_impact": 0}},
+                "event_evidence": {"perception_event": {"content": "测试"}},
                 "submitted_at": "2026-08-19T10:00:00",
                 "completed_at": "2026-08-19T10:00:01",
                 "error": None,
@@ -30,6 +31,11 @@ class CommitStoreTests(unittest.TestCase):
                 self.assertEqual(
                     len(commit_store.list_unfinished_commits()),
                     1,
+                )
+                row = commit_store.list_commit_records(thread_id="thread-1")[0]
+                self.assertEqual(
+                    row["event_evidence_json"]["perception_event"]["content"],
+                    "测试",
                 )
                 commit_store.mark_commit_started(job["job_id"])
                 commit_store.mark_commit_terminal(

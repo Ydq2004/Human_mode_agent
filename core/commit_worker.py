@@ -50,6 +50,7 @@ class CommitWorker:
         *,
         ledger=None,
         start_sequence: int = 1,
+        processed_sequences: set[int] | None = None,
     ) -> None:
         if (
             isinstance(start_sequence, bool)
@@ -69,6 +70,15 @@ class CommitWorker:
         self._seen_sequences: set[int] = set()
         # 该水位可以从持久经历表恢复；默认 1 保持旧调用方式兼容。
         self._next_sequence = start_sequence
+        self._processed_sequences = {
+            sequence
+            for sequence in (processed_sequences or set())
+            if isinstance(sequence, int) and sequence >= start_sequence
+        }
+        # 已经在旧进程完成的序号不能再次提交；它们同时用于跨过恢复时的
+        # 已知空位，让新的任务不会永远等待一个已经完成的历史事件。
+        self._seen_sequences.update(self._processed_sequences)
+        self._advance_processed_sequences_locked()
         self._closed = False
         self._thread = Thread(
             target=self._run,
@@ -184,7 +194,11 @@ class CommitWorker:
     def _run(self) -> None:
         while True:
             with self._condition:
+                self._advance_processed_sequences_locked()
                 while self._next_sequence not in self._pending:
+                    self._advance_processed_sequences_locked()
+                    if self._next_sequence in self._pending:
+                        break
                     if self._closed:
                         # 关闭时仍缺前序事件，不能无限等待。剩余任务都显式
                         # 失败，调用方可以看到数据缺口，而不是假装已提交。
@@ -227,7 +241,13 @@ class CommitWorker:
             finally:
                 with self._condition:
                     self._next_sequence += 1
+                    self._advance_processed_sequences_locked()
                     self._condition.notify_all()
+
+    def _advance_processed_sequences_locked(self) -> None:
+        """跳过账本中已经进入终态的历史序号；调用时必须持有 condition。"""
+        while self._next_sequence in self._processed_sequences:
+            self._next_sequence += 1
 
     def _fail_missing_sequences_locked(self) -> None:
         """关闭时防止因丢失一个序号而永远挂起。需在 condition 内调用。"""

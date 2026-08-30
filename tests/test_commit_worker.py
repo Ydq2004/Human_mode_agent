@@ -88,6 +88,22 @@ class CommitWorkerTests(unittest.TestCase):
         finally:
             worker.shutdown()
 
+    def test_worker_skips_sequences_already_terminal_in_previous_process(self):
+        order = []
+        worker = CommitWorker(
+            lambda task: order.append(task.event_sequence) or {"ok": True},
+            start_sequence=1,
+            processed_sequences={1, 2, 4},
+        )
+        try:
+            worker.submit(CommitTask("job-3", 3, "thread", {}))
+            worker.submit(CommitTask("job-5", 5, "thread", {}))
+            self.assertEqual(worker.wait("job-3", 2)["status"], "committed")
+            self.assertEqual(worker.wait("job-5", 2)["status"], "committed")
+            self.assertEqual(order, [3, 5])
+        finally:
+            worker.shutdown()
+
 
 if __name__ == "__main__":
     unittest.main()

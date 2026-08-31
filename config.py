@@ -56,6 +56,15 @@ VECTOR_REPAIR_RETRY_DELAY_SECONDS = 60.0
 VECTOR_REPAIR_INTERVAL_SECONDS = 300.0
 VECTOR_REPAIR_BATCH_SIZE = 10
 
+# ========== 情景摘要失败重试 ==========
+# 同一批来源切片的摘要最多自动尝试这么多次；超过上限后保留失败记录，
+# 等待人工检查，不让启动流程无限重复调用生成器。
+SUMMARY_MAX_ATTEMPTS = 3
+SUMMARY_RETRY_DELAY_SECONDS = 300.0
+SUMMARY_LLM_TIMEOUT_SECONDS = 90.0
+SUMMARY_LLM_TEMPERATURE = 0.1
+SUMMARY_LLM_MAX_TOKENS = 2048
+
 
 # ========== 情绪运行状态 ==========
 MOOD_MIN = 0
@@ -83,11 +92,11 @@ MOOD_IMPACT_MAX = 10
 # 例：mild_positive(4) * medium(0.6) * reactivity(1.0) = +2.4，四舍五入为 +2。
 # 调大某一项：该类事件更容易推动 mood；正负值必须保持方向一致。
 MOOD_EVENT_VALENCE_BIAS = {
-    "strong_positive": 3,
-    "mild_positive": 1,
+    "strong_positive": 4,
+    "mild_positive": 2,
     "neutral": 0,
     "mild_negative": -2,
-    "strong_negative": -3,
+    "strong_negative": -4,
 }
 
 # 事件“显著性”对 mood 的倍率。它只调节幅度，不创造正负方向。

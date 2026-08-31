@@ -526,6 +526,19 @@ def process_perception_event(
       "emotion_profile"
     ]["mood_reactivity"]
 
+    # 在真正提交后台评价前先保存可重建输入。进程若此处之后崩溃，
+    # 启动恢复可以用同一 ExperienceSlice 重新评价，而不是凭 job_id 猜测。
+    if event_sequence is not None:
+        commit_store.record_appraisal_pending(
+            job_id=f"appraisal_{experience_slice.slice_id}",
+            experience_slice_id=experience_slice.slice_id,
+            event_id=event.event_id,
+            event_sequence=int(event_sequence),
+            thread_id=thread_id,
+            persona_context=dict(frame.persona_context),
+            mood_reactivity=float(mood_reactivity),
+        )
+
     appraisal_job_id = appraisal_worker.submit(
         experience=experience_slice,
         persona_context=dict(frame.persona_context),
@@ -835,6 +848,46 @@ def _prepare_commit_recovery(
     return tasks, start_sequence, terminal_sequences, notes
 
 
+def _prepare_appraisal_recovery(
+    *,
+    thread_id: str,
+) -> tuple[list[dict], list[str]]:
+    """读取可重建的 pending appraisal；缺少原始经历的任务明确收口。"""
+    rows = commit_store.list_recoverable_appraisals(
+        thread_id=thread_id,
+        max_age_hours=COMMIT_RECOVERY_MAX_AGE_HOURS,
+    )
+    recoverable: list[dict] = []
+    notes: list[str] = []
+    for row in rows:
+        stored = get_experience_slice(str(row.get("experience_slice_id") or ""))
+        input_data = row.get("appraisal_input")
+        if stored is None or not isinstance(input_data, dict):
+            reason = "无法从 ExperienceSlice 或账本输入重建 appraisal"
+            commit_store.mark_commit_abandoned(row["job_id"], reason)
+            notes.append(f"{row['job_id']}: {reason}，已标记 abandoned")
+            continue
+        if not isinstance(input_data.get("persona_context"), dict):
+            reason = "账本中的 persona_context 无效"
+            commit_store.mark_commit_abandoned(row["job_id"], reason)
+            notes.append(f"{row['job_id']}: {reason}，已标记 abandoned")
+            continue
+        try:
+            mood_reactivity = float(input_data["mood_reactivity"])
+        except (KeyError, TypeError, ValueError):
+            reason = "账本中的 mood_reactivity 无效"
+            commit_store.mark_commit_abandoned(row["job_id"], reason)
+            notes.append(f"{row['job_id']}: {reason}，已标记 abandoned")
+            continue
+        recoverable.append({
+            "row": row,
+            "experience": stored.experience,
+            "persona_context": input_data["persona_context"],
+            "mood_reactivity": mood_reactivity,
+        })
+    return recoverable, notes
+
+
 def _consume_finished_commit_jobs(
     appraisal_worker: AppraisalWorker,
     commit_worker: CommitWorker,
@@ -905,6 +958,12 @@ def main():
     # 否则“需要检索长期认知”的提示没有可命中的初始实体。
     initialize_genesis_memory(persona)
 
+    recovered_appraisals, appraisal_recovery_notes = _prepare_appraisal_recovery(
+        thread_id=thread_id,
+    )
+    for note in appraisal_recovery_notes:
+        print(f"评价恢复跳过：{note}")
+
     # 启动时先根据持久账本生成恢复计划。这里只恢复评价已完成、证据完整、
     # 事件序号没有缺口的任务；评价失败或资料不全的任务不会被伪造重跑。
     recovery_tasks, worker_start_sequence, processed_sequences, recovery_notes = (
@@ -931,6 +990,19 @@ def main():
             commit_worker,
         ),
     )
+    for item in recovered_appraisals:
+        row = item["row"]
+        try:
+            appraisal_worker.submit(
+                experience=item["experience"],
+                persona_context=item["persona_context"],
+                mood_reactivity=item["mood_reactivity"],
+                event_sequence=int(row["event_sequence"]),
+                thread_id=thread_id,
+            )
+            print(f"已恢复评价任务：{row['job_id']}")
+        except Exception as exc:
+            print(f"评价恢复提交失败：{row['job_id']}：{exc}")
     for task in recovery_tasks:
         try:
             commit_worker.submit(task)

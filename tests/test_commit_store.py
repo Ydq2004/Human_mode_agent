@@ -143,6 +143,29 @@ class CommitStoreTests(unittest.TestCase):
                     commit_store.mark_commit_abandoned(job["job_id"], "再次处理")
                 )
 
+    def test_pending_appraisal_input_can_be_recovered(self):
+        with tempfile.TemporaryDirectory() as directory:
+            db_path = str(Path(directory) / "ledger.db")
+            with patch.object(commit_store, "SQLITE_DB_PATH", db_path):
+                commit_store.record_appraisal_pending(
+                    job_id="appraisal_exp_pending",
+                    experience_slice_id="exp_pending",
+                    event_id="evt_pending",
+                    event_sequence=8,
+                    thread_id="thread-pending",
+                    persona_context={"agent_name": "Agent"},
+                    mood_reactivity=1.1,
+                    submitted_at="2026-08-31T10:00:00",
+                )
+                rows = commit_store.list_recoverable_appraisals(
+                    thread_id="thread-pending",
+                    max_age_hours=None,
+                )
+
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["appraisal_input"]["mood_reactivity"], 1.1)
+            self.assertEqual(rows[0]["appraisal_status"], "pending")
+
 
 if __name__ == "__main__":
     unittest.main()

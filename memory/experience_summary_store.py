@@ -11,11 +11,11 @@ import json
 import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterator
 
-from config import SQLITE_DB_PATH
+from config import SQLITE_DB_PATH, SUMMARY_MAX_ATTEMPTS, SUMMARY_RETRY_DELAY_SECONDS
 
 
 SUMMARY_TYPES = frozenset({
@@ -25,6 +25,10 @@ SUMMARY_TYPES = frozenset({
     "monthly",
     "annual",
 })
+
+SUMMARY_ATTEMPT_SUCCEEDED = "succeeded"
+SUMMARY_ATTEMPT_FAILED = "failed"
+SUMMARY_ATTEMPT_EXHAUSTED = "exhausted"
 
 
 @dataclass(frozen=True)
@@ -175,6 +179,24 @@ def ensure_summary_store() -> None:
             "CREATE INDEX IF NOT EXISTS idx_experience_summaries_period "
             "ON experience_summaries (summary_type, start_at, end_at)"
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS experience_summary_attempts (
+                attempt_key TEXT PRIMARY KEY,
+                summary_type TEXT NOT NULL,
+                start_at TEXT NOT NULL,
+                end_at TEXT NOT NULL,
+                thread_id TEXT,
+                source_slice_ids_json TEXT NOT NULL,
+                status TEXT NOT NULL,
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT,
+                last_attempt_at TEXT,
+                next_retry_at TEXT,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
 
 
 def save_summary(summary: ExperienceSummary) -> bool:
@@ -281,3 +303,137 @@ def list_summaries(
             (*params, limit),
         ).fetchall()
     return [_row_to_summary(row) for row in rows]
+
+
+def _attempt_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+    item = dict(row)
+    try:
+        item["source_slice_ids"] = json.loads(item.pop("source_slice_ids_json"))
+    except (KeyError, TypeError, json.JSONDecodeError):
+        item["source_slice_ids"] = []
+    return item
+
+
+def get_summary_attempt(attempt_key: str) -> dict[str, Any] | None:
+    """读取一批来源切片最近一次摘要生成状态。"""
+    ensure_summary_store()
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM experience_summary_attempts WHERE attempt_key = ?",
+            (str(attempt_key or "").strip(),),
+        ).fetchone()
+    return _attempt_to_dict(row) if row else None
+
+
+def get_summary_attempts(*, limit: int = 100) -> list[dict[str, Any]]:
+    """按更新时间读取摘要生成尝试记录，供诊断和测试使用。"""
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+        raise ValueError("limit 必须是大于等于 1 的整数")
+    ensure_summary_store()
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM experience_summary_attempts "
+            "ORDER BY updated_at ASC, attempt_key ASC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    return [_attempt_to_dict(row) for row in rows]
+
+
+def record_summary_attempt(
+    *,
+    attempt_key: str,
+    summary_type: str,
+    start_at: str,
+    end_at: str,
+    thread_id: str | None,
+    source_slice_ids: list[str] | tuple[str, ...],
+    success: bool,
+    error: str | None = None,
+    retry_delay_seconds: float = SUMMARY_RETRY_DELAY_SECONDS,
+    max_attempts: int = SUMMARY_MAX_ATTEMPTS,
+) -> dict[str, Any]:
+    """保存摘要生成结果，并在失败时安排有限重试。"""
+    if (
+        isinstance(retry_delay_seconds, bool)
+        or not isinstance(retry_delay_seconds, (int, float))
+        or retry_delay_seconds < 0
+    ):
+        raise ValueError("retry_delay_seconds 必须是非负数字")
+    if isinstance(max_attempts, bool) or not isinstance(max_attempts, int) or max_attempts < 1:
+        raise ValueError("max_attempts 必须是正整数")
+
+    ensure_summary_store()
+    now = datetime.now()
+    with _connect() as conn:
+        old = conn.execute(
+            "SELECT attempt_count FROM experience_summary_attempts WHERE attempt_key = ?",
+            (attempt_key,),
+        ).fetchone()
+        # 每次真正调用生成器都算一次尝试，不论最后成功还是失败。
+        # 这样 attempt_count 才能同时用于重试控制和运行统计。
+        count = (int(old["attempt_count"] or 0) if old else 0) + 1
+        if success:
+            status = SUMMARY_ATTEMPT_SUCCEEDED
+            next_retry = None
+        else:
+            status = (
+                SUMMARY_ATTEMPT_EXHAUSTED
+                if count >= max_attempts
+                else SUMMARY_ATTEMPT_FAILED
+            )
+            next_retry = (
+                None
+                if status == SUMMARY_ATTEMPT_EXHAUSTED
+                else (now + timedelta(seconds=float(retry_delay_seconds))).isoformat()
+            )
+        conn.execute(
+            """
+            INSERT INTO experience_summary_attempts (
+                attempt_key, summary_type, start_at, end_at, thread_id,
+                source_slice_ids_json, status, attempt_count, last_error,
+                last_attempt_at, next_retry_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(attempt_key) DO UPDATE SET
+                source_slice_ids_json=excluded.source_slice_ids_json,
+                status=excluded.status,
+                attempt_count=excluded.attempt_count,
+                last_error=excluded.last_error,
+                last_attempt_at=excluded.last_attempt_at,
+                next_retry_at=excluded.next_retry_at,
+                updated_at=excluded.updated_at
+            """,
+            (
+                attempt_key,
+                summary_type,
+                start_at,
+                end_at,
+                thread_id,
+                _json(list(source_slice_ids)),
+                status,
+                count,
+                None if success else str(error or "摘要生成失败"),
+                now.isoformat(),
+                next_retry,
+                now.isoformat(),
+            ),
+        )
+    return get_summary_attempt(attempt_key) or {}
+
+
+def summary_attempt_is_due(
+    attempt: dict[str, Any] | None,
+    *,
+    now: datetime | None = None,
+) -> bool:
+    """判断失败记录是否已经到达下一次重试时间。"""
+    if not attempt:
+        return True
+    if attempt.get("status") in {SUMMARY_ATTEMPT_SUCCEEDED, SUMMARY_ATTEMPT_EXHAUSTED}:
+        return False
+    retry_at = attempt.get("next_retry_at")
+    if not retry_at:
+        return True
+    try:
+        return datetime.fromisoformat(str(retry_at)) <= (now or datetime.now())
+    except ValueError:
+        return False

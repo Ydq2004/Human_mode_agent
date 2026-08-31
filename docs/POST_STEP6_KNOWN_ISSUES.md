@@ -183,11 +183,12 @@ MemoryEntity 的 `created_at` 和 `last_mentioned_at` 只负责告诉 Agent “�
 ### 处理要求
 
 - 每份摘要保存覆盖时间、来源 slice id、生成时间、Prompt/算法版本和不确定性。
-- `memory/experience_summary_store.py` 已提供 `experience_summaries` 表和追加式保存/读取；`memory/experience_summary_builder.py` 已提供不调用 LLM 的片段/每日/周/月稳定生成器；`memory/experience_summary_pipeline.py` 的 `generate_daily_summary(day)` 可以按日期读取、生成并幂等保存 daily 摘要；`memory/summary_scheduler.py` 已在启动时检查昨天、上周和上月。当前仍没有独立的外部定时调度，也不负责周/月的更深层反思。
+- `memory/experience_summary_store.py` 已提供 `experience_summaries` 表和追加式保存/读取，并增加 `experience_summary_attempts` 记录摘要生成状态；`memory/experience_summary_builder.py` 已提供不调用 LLM 的片段/每日/周/月稳定生成器；`memory/experience_summary_pipeline.py` 的 `generate_daily_summary(day)` 可以按日期读取、生成并幂等保存 daily 摘要；`memory/summary_scheduler.py` 已在启动时检查昨天、上周和上月，并对失败按次数和时间有限重试。当前仍没有独立的外部定时调度，也不负责周/月的更深层反思。
 - 周期摘要的计划规则：每日检查昨天；每周检查上一个完整自然周；每月检查上一个完整自然月。当前已接入 `main()` 启动检查；检查只读 SQLite、不会调用 LLM，失败不阻塞主 Agent。以后如果进程长时间不重启，可由独立定时任务复用同一入口。不需要全天重复检查同一周期。
 - “已生成”不等于永远跳过：如果摘要保存的 `source_slice_ids` 与该周期当前实际切片一致，则直接跳过；如果后来补进迟到切片，来源列表发生变化，就生成新的摘要版本。旧摘要和原始切片保留，不覆盖历史。
 - 周/月摘要应直接读取对应周期的原始 `ExperienceSlice`，不能只把旧的每日摘要再次总结，避免误差逐层累积。所有周期边界使用实例统一时区，并按自然日、自然周、自然月计算。
 - 周/月反思不能只对旧摘要继续做无来源的“总结的总结”；至少要能回查并抽样核对原始证据。
+- 摘要生成失败会写入 `experience_summary_attempts`；达到 `SUMMARY_MAX_ATTEMPTS` 后标记 `exhausted`，不再无限重试。失败不会删除原始切片或覆盖已有摘要。
 - 关系变化、人格变化和情绪印记不能因为摘要措辞而直接更新，仍要经过各自证据链和提交规则。
 - 主 Agent 每轮会看到最近可用的日、周、月摘要，作为较长时间背景，但不会自动接收按当前事件筛选出的相关摘要。长期细节和具体过程仍由主 Agent 在确有回忆需要时调用 `recall_memory` 获取，避免每轮进行全库检索。
 - 单轮主动回忆不能无限循环。`config.py` 中的 `RECALL_MAX_CALLS_PER_TURN=10` 是硬上限；`memory.recall_tools.recall_call_budget()` 在一次 `agent.invoke()` 外建立共享的线程安全计数器，即使工具并行执行，第 11 次及以后也返回 `result_status=call_limit_reached`。提示词只负责引导尽快停止，代码层负责最终限制。
@@ -282,20 +283,17 @@ MemoryEntity 的 `created_at` 和 `last_mentioned_at` 只负责告诉 Agent “�
 
 ### 阶段 2：跨进程提交账本恢复（P0）
 
-当前账本由 `record_appraisal_terminal()` 在 appraisal 完成或失败后写入，尚未记录真正的 pending appraisal。
-因此不能直接把所有“未完成”任务重跑。
-
-当前进度：**2.1 和 2.2 已完成，真正的 pending appraisal 恢复尚未开始**。已经加入可恢复候选查询、
-事件证据保存、启动恢复计划、提交序号跳过和明确的 `abandoned` 标记工具。启动只自动重投唯一、
-未过期、评价结果完整且没有序号缺口的等待提交任务；真正的 pending appraisal 恢复仍需先保存可重建输入。
+当前进度：**阶段 2.1、2.2 以及真正的 pending appraisal 恢复第一版均已完成**。
+账本会保存可重建的评价输入；启动时只恢复唯一、未过期、输入完整且处于
+`appraisal_status=pending`、`commit_status=waiting` 的任务。
 
 施工边界：
 
 1. 已完成 appraisal、但 `commit_status=waiting` 的记录，只恢复到 `CommitWorker`。
 2. `commit_status=committing` 的记录，启动时先核对结构化主库，再决定继续提交或标记 `abandoned`。
 3. `appraisal_status=failed` 只有在能从 ExperienceSlice 和保存快照重建完整输入时才重评，否则人工处理并标记 `abandoned`。
-4. 真正恢复 pending appraisal 前，必须先保存可重建的任务输入；不能凭 job id 猜测。
-5. 增加手动查看、重试和 abandoned 标记入口，所有操作保留原因和时间。
+4. pending appraisal 必须依赖账本中的可重建输入和原始 ExperienceSlice，不能凭 job id 猜测。
+5. 缺少输入、原始经历或超过保留时间时，明确标记 `abandoned` 并保留原因。
 
 ### 阶段 3：SQLite/Chroma 一致性修复增强（P0）
 
@@ -306,4 +304,12 @@ MemoryEntity 的 `created_at` 和 `last_mentioned_at` 只负责告诉 Agent “�
 
 ### 阶段 4：情景摘要可靠性（P1）
 
-周/月摘要直接读取原始 ExperienceSlice 的要求已经完成。后续只增加摘要生成失败的有限重试、失败记录和对应测试；周期摘要暂不改为 LLM 总结。
+当前进度：**第一版和失败重试已完成**。
+
+- 周/月摘要直接读取原始 ExperienceSlice；可选使用独立 LLM 做深层归纳。
+- `experience_summary_attempts` 保存状态、错误、尝试次数和下次重试时间。
+- `attempt_count` 每次实际尝试都会递增，成功和失败都计入。
+- 达到 `SUMMARY_MAX_ATTEMPTS` 后进入 `exhausted`，不再自动重试。
+- 外部 `tools/run_periodic_summaries.py` 会在所有周期处理完后，以非零退出码报告本次失败，
+  便于 Windows 任务计划程序发现问题。
+- 迟到切片形成新的来源批次，旧摘要和原始经历不会被覆盖或删除。

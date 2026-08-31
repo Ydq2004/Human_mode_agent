@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+import hashlib
 
 from memory.experience_store import list_experience_slices
 from memory.experience_summary_builder import (
@@ -16,11 +17,16 @@ from memory.experience_summary_builder import (
     build_monthly_summary,
     build_weekly_summary,
 )
+from memory.experience_summary_llm import build_deep_period_summary
 from memory.experience_summary_store import (
     ExperienceSummary,
+    get_summary_attempt,
     list_summaries,
+    record_summary_attempt,
     save_summary,
+    summary_attempt_is_due,
 )
+from config import SUMMARY_MAX_ATTEMPTS, SUMMARY_RETRY_DELAY_SECONDS
 
 
 @dataclass(frozen=True)
@@ -102,12 +108,22 @@ def _build_period_summary(
     return builders[period.summary_type](rows, generated_at=generated_at)
 
 
+def _attempt_key(period: SummaryPeriod, source_ids: tuple[str, ...], thread_id: str | None) -> str:
+    """同一周期、线程和来源切片使用同一个重试记录。"""
+    raw = "|".join((period.summary_type, str(thread_id or ""), period.start_day.isoformat(), period.end_day.isoformat(), *source_ids))
+    return "summary_attempt_" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
+
+
 def generate_missing_period_summaries(
     *,
     now: datetime | None = None,
     thread_id: str | None = None,
     generated_at: str | None = None,
     limit: int = 1000,
+    retry_delay_seconds: float = SUMMARY_RETRY_DELAY_SECONDS,
+    max_attempts: int = SUMMARY_MAX_ATTEMPTS,
+    summary_llm=None,
+    raise_on_failure: bool = False,
 ) -> list[ExperienceSummary]:
     """补齐昨天、上周、上月中尚未覆盖当前来源的摘要。
 
@@ -118,6 +134,7 @@ def generate_missing_period_summaries(
         raise ValueError("limit 必须是 1 到 10000 的整数")
 
     results: list[ExperienceSummary] = []
+    failures: list[str] = []
     for period in periods_to_check(now):
         start_at, end_at = _period_bounds(period)
         rows = list_experience_slices(
@@ -133,13 +150,60 @@ def generate_missing_period_summaries(
         if _has_current_summary(period, source_ids):
             continue
 
-        summary = _build_period_summary(
-            period,
-            rows,
-            generated_at=generated_at,
+        attempt_key = _attempt_key(period, source_ids, thread_id)
+        if not summary_attempt_is_due(get_summary_attempt(attempt_key), now=now):
+            continue
+
+        try:
+            if summary_llm is not None and period.summary_type in {"weekly", "monthly"}:
+                summary = build_deep_period_summary(
+                    rows,
+                    summary_type=period.summary_type,
+                    llm=summary_llm,
+                    generated_at=generated_at,
+                )
+            else:
+                summary = _build_period_summary(
+                    period,
+                    rows,
+                    generated_at=generated_at,
+                )
+            save_summary(summary)
+        except Exception as exc:
+            failures.append(
+                f"{period.summary_type} {start_at}~{end_at}: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            record_summary_attempt(
+                attempt_key=attempt_key,
+                summary_type=period.summary_type,
+                start_at=start_at,
+                end_at=end_at,
+                thread_id=thread_id,
+                source_slice_ids=source_ids,
+                success=False,
+                error=f"{type(exc).__name__}: {exc}",
+                retry_delay_seconds=retry_delay_seconds,
+                max_attempts=max_attempts,
+            )
+            continue
+
+        record_summary_attempt(
+            attempt_key=attempt_key,
+            summary_type=period.summary_type,
+            start_at=start_at,
+            end_at=end_at,
+            thread_id=thread_id,
+            source_slice_ids=source_ids,
+            success=True,
+            retry_delay_seconds=retry_delay_seconds,
+            max_attempts=max_attempts,
         )
-        save_summary(summary)
         results.append(summary)
 
-    return results
+    # 默认保持库内调用的“单个周期失败不影响其他周期”行为。
+    # 外部定时器可打开此开关，在全部周期处理完后用非零退出码报告失败。
+    if raise_on_failure and failures:
+        raise RuntimeError("；".join(failures))
 
+    return results

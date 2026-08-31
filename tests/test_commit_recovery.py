@@ -6,11 +6,43 @@ from unittest.mock import patch
 
 from core.experience import create_experience_slice
 from core.perception import create_perception_event
-from main import _prepare_commit_recovery
+from main import _prepare_appraisal_recovery, _prepare_commit_recovery
 from memory import commit_store
 
 
 class CommitRecoveryTests(unittest.TestCase):
+    def test_pending_appraisal_plan_rebuilds_from_persisted_input(self):
+        with tempfile.TemporaryDirectory() as directory:
+            db_path = str(Path(directory) / "ledger.db")
+            event = create_perception_event("user", "text", "待评价恢复")
+            experience = create_experience_slice(
+                perception_event=event,
+                perception_understanding={},
+                activated_memory_refs=[],
+                response_or_actions=[],
+                observations=[],
+                state_snapshot={"mood": 50},
+            )
+            with (
+                patch.object(commit_store, "SQLITE_DB_PATH", db_path),
+                patch("main.get_experience_slice", return_value=type("Stored", (), {"experience": experience})()),
+            ):
+                commit_store.record_appraisal_pending(
+                    job_id="appraisal_pending",
+                    experience_slice_id=experience.slice_id,
+                    event_id=event.event_id,
+                    event_sequence=1,
+                    thread_id="thread-pending",
+                    persona_context={"agent_name": "Agent"},
+                    mood_reactivity=1.0,
+                )
+                rows, notes = _prepare_appraisal_recovery(thread_id="thread-pending")
+
+            self.assertEqual(notes, [])
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["mood_reactivity"], 1.0)
+            self.assertEqual(rows[0]["experience"].slice_id, experience.slice_id)
+
     def test_recovery_plan_rebuilds_unique_waiting_task_and_skips_terminal_sequence(self):
         with tempfile.TemporaryDirectory() as directory:
             db_path = str(Path(directory) / "ledger.db")

@@ -385,10 +385,10 @@ ExperienceSlice 完整记录：
 当前 `commit_ledger` 只在 appraisal 进入终态后写入记录，因此不能把账本中不存在的
 `appraisal_status=pending` 任务假装恢复。第一步只恢复已有可靠结果：
 
-当前进度：**2.1 和 2.2 已完成，真正的 pending appraisal 恢复尚未开始**。`commit_store`
-已提供可恢复候选查询、事件证据保存和明确的 `abandoned` 收口接口；启动流程会恢复
-唯一、未过期、评价结果完整且事件序号没有缺口的等待提交任务。真正的 pending appraisal
-恢复仍需先补齐可重建任务输入。
+当前进度：**2.1 和 2.2 已完成，pending appraisal 的持久输入和启动恢复第一版也已完成**。
+`commit_store` 保存 `persona_context`、`mood_reactivity` 等可重建输入；启动流程会恢复
+唯一、未过期、输入完整的 pending appraisal，以及评价已完成但仍等待提交的任务。旧账本
+没有这些输入时不会猜测重跑，会保留人工处理路径。
 
 审核补充：序号缺口判断会把已进入终态的中间序号视为已知，不会误阻塞后续等待任务；
 无法从 ExperienceSlice 重建的等待任务会在启动时保留原因并标记为 `abandoned`，不再反复尝试。
@@ -397,8 +397,7 @@ ExperienceSlice 完整记录：
 - `commit_status=committing`：启动时先根据结构化主库检查是否已经产生写入，再决定继续提交或标记为 `abandoned`。
 - `appraisal_status=failed`：只有能从 `ExperienceSlice` 和保存的角色/状态快照重建完整评价输入时才允许重评；否则标记 `abandoned` 并保留原因。
 
-后续若要恢复真正的 pending appraisal，必须先扩展账本保存任务输入或可重建引用，不能只保存一个 job id。
-同时提供只读检查和人工修复入口；超过保留时间的任务只做明确的 `abandoned` 归档，不静默删除。
+超过保留时间或缺少原始经历/输入的任务只做明确的 `abandoned` 归档，不静默删除。
 
 ### 阶段 3：SQLite/Chroma 一致性修复增强（P0）
 
@@ -411,4 +410,23 @@ ExperienceSlice 完整记录：
 
 ### 阶段 4：情景摘要可靠性（P1）
 
-周/月摘要已经直接读取原始 `ExperienceSlice`，不再重复总结旧摘要。后续只补充摘要生成失败的有限重试、失败记录和测试；暂不把周期摘要生成器改成 LLM。
+当前进度：**第一版已完成并通过定向测试**。
+
+周/月摘要直接读取原始 `ExperienceSlice`，不再重复总结旧摘要。`experience_summary_attempts`
+保存每个周期和来源切片批次的生成状态、失败原因、尝试次数、最后尝试时间和下一次重试时间；
+达到 `SUMMARY_MAX_ATTEMPTS` 后进入 `exhausted`，不会无限调用。启动检查仍然不调用 LLM，
+生成失败不会阻塞主 Agent。迟到切片会形成新的来源批次和新的尝试记录，旧摘要与原始经历保留。
+
+摘要失败会按有限次数重试；同一批来源切片达到上限后进入 `exhausted`。
+库内调用默认保持“一个周期失败不影响其他周期”。外部定时器打开失败报告开关，
+在所有周期处理完后以非零退出码通知任务计划程序，避免失败被静默吞掉。
+
+### 外部周期调度与深层摘要
+
+- `tools/run_periodic_summaries.py` 是一次性入口，适合交给 Windows 任务计划程序或 cron 每天运行。
+- 该入口默认使用角色卡配置的独立 LLM 生成 weekly/monthly 深层摘要；daily 仍使用稳定的代码摘要。
+- `--no-llm` 可在离线或诊断时只运行代码摘要。
+- 外部入口会在本次检查出现摘要生成失败时返回非零退出码；失败记录仍保存在
+  `experience_summary_attempts`，不会影响其他周期继续处理。
+- LLM 摘要只读取原始 `ExperienceSlice`，输出摘要文本和不确定性；来源切片、时间范围和摘要 id 由代码掌握，不能写回认知或人格状态。
+- `attempt_count` 统计每一次实际生成尝试，包括成功和失败；它不是只记录失败次数。

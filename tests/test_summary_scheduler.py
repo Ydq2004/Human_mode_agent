@@ -99,6 +99,104 @@ class SummarySchedulerTests(unittest.TestCase):
             [item.source_slice_ids for item in summaries],
         )
 
+    def test_summary_failure_is_recorded_and_retried_with_a_bound(self):
+        first = _slice("evt-fail", "2026-08-23T10:00:00")
+        experience_store.save_experience_slice(first, thread_id="thread-fail", event_sequence=1)
+        with patch(
+            "memory.summary_scheduler._build_period_summary",
+            side_effect=RuntimeError("生成器失败"),
+        ):
+            generate_missing_period_summaries(
+                now=datetime(2026, 8, 24, 12, 0, 0),
+                thread_id="thread-fail",
+            )
+            # 重试等待时间未到，不会再次调用生成器。
+            generate_missing_period_summaries(
+                now=datetime(2026, 8, 24, 12, 1, 0),
+                thread_id="thread-fail",
+            )
+
+        attempts = experience_summary_store.get_summary_attempts()
+        self.assertEqual(len(attempts), 2)  # daily + weekly
+        self.assertTrue(all(item["status"] == "failed" for item in attempts))
+        self.assertTrue(all(item["attempt_count"] == 1 for item in attempts))
+
+    def test_summary_failure_becomes_exhausted_after_max_attempts(self):
+        first = _slice("evt-exhaust", "2026-08-23T10:00:00")
+        experience_store.save_experience_slice(first, thread_id="thread-exhaust", event_sequence=1)
+        with patch(
+            "memory.summary_scheduler._build_period_summary",
+            side_effect=RuntimeError("持续失败"),
+        ), patch("memory.summary_scheduler.summary_attempt_is_due", return_value=True):
+            for _ in range(3):
+                generate_missing_period_summaries(
+                now=datetime(2026, 8, 24, 12, 0, 0),
+                thread_id="thread-exhaust",
+                generated_at="2026-08-24T12:00:00",
+                retry_delay_seconds=0,
+                max_attempts=3,
+            )
+
+        attempts = experience_summary_store.get_summary_attempts()
+        self.assertEqual({item["status"] for item in attempts}, {"exhausted"})
+        self.assertTrue(all(item["attempt_count"] == 3 for item in attempts))
+
+    def test_weekly_and_monthly_can_use_deep_summary_llm(self):
+        first = _slice("evt-llm", "2026-08-23T10:00:00")
+        experience_store.save_experience_slice(first, thread_id="thread-llm", event_sequence=1)
+
+        class FakeLLM:
+            def __init__(self):
+                self.calls = []
+
+            def invoke(self, prompt):
+                self.calls.append(prompt)
+                return type(
+                    "Response", (),
+                    {"content": '{"summary_text":"记录显示本周任务有连续推进。","uncertainties":[]}'}
+                )()
+
+        llm = FakeLLM()
+        generated = generate_missing_period_summaries(
+            now=datetime(2026, 8, 24, 12, 0, 0),
+            thread_id="thread-llm",
+            summary_llm=llm,
+        )
+        self.assertEqual([item.summary_type for item in generated], ["daily", "weekly"])
+        self.assertEqual(len(llm.calls), 1)
+        self.assertEqual(generated[1].algorithm_version, "experience-summary-llm-v1")
+
+    def test_successful_summary_counts_as_one_attempt(self):
+        first = _slice("evt-success-count", "2026-08-23T10:00:00")
+        experience_store.save_experience_slice(first, thread_id="thread-count", event_sequence=1)
+
+        generate_missing_period_summaries(
+            now=datetime(2026, 8, 24, 12, 0, 0),
+            thread_id="thread-count",
+        )
+
+        attempts = experience_summary_store.get_summary_attempts()
+        self.assertTrue(attempts)
+        self.assertTrue(all(item["attempt_count"] == 1 for item in attempts))
+
+    def test_external_mode_reports_failures_after_all_periods(self):
+        first = _slice("evt-report-failure", "2026-08-23T10:00:00")
+        experience_store.save_experience_slice(first, thread_id="thread-report", event_sequence=1)
+        with patch(
+            "memory.summary_scheduler._build_period_summary",
+            side_effect=RuntimeError("生成器失败"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "daily"):
+                generate_missing_period_summaries(
+                    now=datetime(2026, 8, 24, 12, 0, 0),
+                    thread_id="thread-report",
+                    raise_on_failure=True,
+                )
+
+        attempts = experience_summary_store.get_summary_attempts()
+        self.assertEqual(len(attempts), 2)
+        self.assertTrue(all(item["status"] == "failed" for item in attempts))
+
 
 if __name__ == "__main__":
     unittest.main()

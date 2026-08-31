@@ -72,6 +72,7 @@ def ensure_commit_ledger() -> None:
                 event_sequence INTEGER NOT NULL,
                 thread_id TEXT NOT NULL,
                 appraisal_status TEXT NOT NULL,
+                appraisal_input_json TEXT,
                 appraisal_json TEXT,
                 effects_json TEXT,
                 event_evidence_json TEXT,
@@ -93,6 +94,10 @@ def ensure_commit_ledger() -> None:
             conn.execute(
                 "ALTER TABLE commit_ledger ADD COLUMN event_evidence_json TEXT"
             )
+        if "appraisal_input_json" not in columns:
+            conn.execute(
+                "ALTER TABLE commit_ledger ADD COLUMN appraisal_input_json TEXT"
+            )
         if existing_schema is not None and "commit_ledger_legacy" in {
             row[0]
             for row in conn.execute(
@@ -103,12 +108,12 @@ def ensure_commit_ledger() -> None:
                 """
                 INSERT OR IGNORE INTO commit_ledger (
                     job_id, experience_slice_id, event_id, event_sequence,
-                    thread_id, appraisal_status, appraisal_json, effects_json,
+                    thread_id, appraisal_status, appraisal_input_json, appraisal_json, effects_json,
                     commit_status, commit_result_json, error, submitted_at,
                     appraisal_completed_at, commit_started_at, commit_completed_at
                 )
                 SELECT job_id, experience_slice_id, event_id, event_sequence,
-                    thread_id, appraisal_status, appraisal_json, effects_json,
+                    thread_id, appraisal_status, NULL, appraisal_json, effects_json,
                     commit_status, commit_result_json, error, submitted_at,
                     appraisal_completed_at, commit_started_at, commit_completed_at
                 FROM commit_ledger_legacy
@@ -119,6 +124,99 @@ def ensure_commit_ledger() -> None:
             "CREATE INDEX IF NOT EXISTS idx_commit_ledger_status "
             "ON commit_ledger (commit_status, event_sequence)"
         )
+
+
+def record_appraisal_pending(
+    *,
+    job_id: str,
+    experience_slice_id: str,
+    event_id: str,
+    event_sequence: int,
+    thread_id: str,
+    persona_context: dict[str, Any],
+    mood_reactivity: float,
+    submitted_at: str | None = None,
+) -> None:
+    """在提交后台评价前保存可重建输入；这是跨进程恢复的依据。"""
+    if not job_id or not experience_slice_id or not event_id or not thread_id:
+        raise ValueError("评价输入缺少任务、经历或线程标识")
+    if not isinstance(event_sequence, int) or event_sequence < 1:
+        raise ValueError("event_sequence 必须是正整数")
+    ensure_commit_ledger()
+    input_json = _json({
+        "persona_context": persona_context,
+        "mood_reactivity": float(mood_reactivity),
+    })
+    now = str(submitted_at or _now())
+    with _connect() as conn:
+        existing = conn.execute(
+            "SELECT appraisal_input_json, appraisal_status FROM commit_ledger WHERE job_id = ?",
+            (job_id,),
+        ).fetchone()
+        if existing is not None:
+            if existing["appraisal_input_json"] not in {None, input_json}:
+                raise ValueError(f"job_id {job_id} 的评价输入不一致")
+            if existing["appraisal_input_json"] is None and existing["appraisal_status"] == "pending":
+                conn.execute(
+                    "UPDATE commit_ledger SET appraisal_input_json=? WHERE job_id=?",
+                    (input_json, job_id),
+                )
+            return
+        conn.execute(
+            """
+            INSERT INTO commit_ledger (
+                job_id, experience_slice_id, event_id, event_sequence, thread_id,
+                appraisal_status, appraisal_input_json, appraisal_json, effects_json,
+                event_evidence_json, commit_status, commit_result_json, error,
+                submitted_at, appraisal_completed_at, commit_started_at,
+                commit_completed_at
+            ) VALUES (?, ?, ?, ?, ?, 'pending', ?, NULL, NULL, NULL, 'waiting', NULL, NULL, ?, NULL, NULL, NULL)
+            """,
+            (job_id, experience_slice_id, event_id, event_sequence, thread_id, input_json, now),
+        )
+
+
+def list_recoverable_appraisals(
+    *,
+    thread_id: str | None = None,
+    max_age_hours: float | None = 24.0,
+    now: datetime | None = None,
+) -> list[dict[str, Any]]:
+    """读取有完整输入、仍处于 pending 的 appraisal 任务。"""
+    ensure_commit_ledger()
+    clauses = [
+        "appraisal_status = 'pending'",
+        "commit_status = 'waiting'",
+        "appraisal_input_json IS NOT NULL",
+    ]
+    params: list[Any] = []
+    if thread_id:
+        clauses.append("thread_id = ?")
+        params.append(str(thread_id).strip())
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM commit_ledger WHERE " + " AND ".join(clauses)
+            + " ORDER BY event_sequence",
+            params,
+        ).fetchall()
+    cutoff = None
+    if max_age_hours is not None:
+        cutoff = (now or datetime.now()) - timedelta(hours=float(max_age_hours))
+    output = []
+    for row in rows:
+        try:
+            submitted = datetime.fromisoformat(str(row["submitted_at"]))
+        except (TypeError, ValueError):
+            continue
+        if cutoff is not None and submitted < cutoff:
+            continue
+        item = _decode_ledger_row(row)
+        try:
+            item["appraisal_input"] = json.loads(row["appraisal_input_json"])
+        except (TypeError, json.JSONDecodeError):
+            continue
+        output.append(item)
+    return output
 
 
 def record_appraisal_terminal(job: dict[str, Any]) -> None:
@@ -134,7 +232,7 @@ def record_appraisal_terminal(job: dict[str, Any]) -> None:
     ensure_commit_ledger()
     with _connect() as conn:
         existing = conn.execute(
-            "SELECT appraisal_json, effects_json, event_evidence_json, "
+            "SELECT appraisal_input_json, appraisal_json, effects_json, event_evidence_json, "
             "appraisal_status "
             "FROM commit_ledger WHERE job_id = ?",
             (job["job_id"],),
@@ -146,6 +244,7 @@ def record_appraisal_terminal(job: dict[str, Any]) -> None:
             sequence,
             thread_id,
             status,
+            _json(job.get("appraisal_input")),
             _json(job.get("appraisal")),
             _json(job.get("effects")),
             "waiting",
@@ -159,23 +258,48 @@ def record_appraisal_terminal(job: dict[str, Any]) -> None:
         )
         if existing is not None:
             if (
-                existing["appraisal_json"] != values[6]
-                or existing["effects_json"] != values[7]
-                or existing["event_evidence_json"] != values[9]
-                or existing["appraisal_status"] != status
+                existing["appraisal_status"] not in {"pending", status}
+                or (
+                    existing["appraisal_json"] is not None
+                    and existing["appraisal_json"] != values[7]
+                )
+                or (
+                    existing["effects_json"] is not None
+                    and existing["effects_json"] != values[8]
+                )
+                or (
+                    existing["event_evidence_json"] is not None
+                    and existing["event_evidence_json"] != values[10]
+                )
             ):
                 raise ValueError(f"job_id {job['job_id']} 的评价结果不一致")
+            if existing["appraisal_status"] == "pending":
+                conn.execute(
+                    "UPDATE commit_ledger SET appraisal_status=?, appraisal_json=?, "
+                    "effects_json=?, event_evidence_json=?, error=?, appraisal_completed_at=? "
+                    "WHERE job_id=?",
+                    (
+                        status,
+                        values[7],
+                        values[8],
+                        values[10],
+                        values[12],
+                        values[14],
+                        job["job_id"],
+                    ),
+                )
+            return
             return
 
         conn.execute(
             """
             INSERT INTO commit_ledger (
                 job_id, experience_slice_id, event_id, event_sequence, thread_id,
-                appraisal_status, appraisal_json, effects_json, commit_status,
+                appraisal_status, appraisal_input_json, appraisal_json, effects_json, commit_status,
                 event_evidence_json, commit_result_json, error, submitted_at,
                 appraisal_completed_at,
                 commit_started_at, commit_completed_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             values,
         )
@@ -247,6 +371,7 @@ def _decode_ledger_row(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
     """把账本 JSON 字段恢复成 Python 对象，供恢复工具和调度器使用。"""
     item = dict(row)
     for key in (
+        "appraisal_input_json",
         "appraisal_json",
         "effects_json",
         "event_evidence_json",

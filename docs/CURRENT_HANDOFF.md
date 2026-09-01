@@ -91,7 +91,7 @@ PerceptionEvent
 
 当前仍未完成：
 
-- ExperienceSlice 的第一版追加存储和跨进程读取已完成；提交账本、SQLite/Chroma 存储修复队列、摘要存储契约、无 LLM 的片段/每日/周/月摘要生成器、启动周期检查、外部定时调度和人格证据存储/验证/快照计算第一版已完成；人格反思 LLM 和主 Agent 注入仍未完成。
+- ExperienceSlice 的第一版追加存储和跨进程读取已完成；提交账本、SQLite/Chroma 存储修复队列、摘要存储契约、无 LLM 的片段/每日/周/月摘要生成器、启动周期检查、外部定时调度和人格证据存储/验证/快照计算第一版已完成；人格反思候选生成与受控保存闭环已完成第一版，主 Agent 注入仍未完成。
 - 周期摘要调度规则已接入启动流程：启动时检查昨天、上个完整自然周和上个完整自然月；来源切片未变化时跳过，发现迟到新切片时生成新版本。该检查只读 SQLite、不会调用 LLM；检查失败不会阻塞主 Agent 启动。以后仍可由外部定时任务复用同一入口。
 
 已补齐：
@@ -253,7 +253,7 @@ P1 当前边界：
 - 第一批特质为 `openness`、`conscientiousness`、`extraversion`，仅作为可扩展注册表，不代表永久锁定 Big Five。
 - 证据验证默认要求至少 3 条经历并跨越至少 3 天；反面证据会降低置信度，过强时拒绝。
 - 快照变化按 `strength × confidence × trait_delta_scale` 计算，单次反思对单个特质不超过 5 分。
-- `ExperienceSlice` 目前只有 `thread_id`，验证器不会把它错误当成 `persona_instance_id`；实例归属统一后再增加跨线程边界。
+- `ExperienceSlice` 目前只有 `thread_id`，不会把它错误当成 `persona_instance_id`。人格反思运行器由调用方显式传入 `persona_instance_id + thread_id`；当前事件序号只在单线程内递增，因此不接受无线程边界的跨线程反思。
 - P1 不调用 LLM、不接入主 Agent、不增加 `ExperienceSlice.autonomy_level`。
 
 P2 当前进度：
@@ -261,7 +261,11 @@ P2 当前进度：
 - `memory/personality_reflection_llm.py` 已加入候选生成器。它只读取原始 ExperienceSlice，
   要求 LLM 返回候选证据数组；不写 `trait_evidence`、不计算最终分数、不修改主 Agent。
 - 反思候选仍必须经过 `personality_validator.py`；非法 JSON 或越权字段不会直接进入人格状态。
-- 当前尚未加入自动反思触发器和后台调度；P2 先完成候选契约与真实/极限测试，再接入运行流程。
+- `memory/personality_reflection_runner.py` 已加入受控运行器：默认至少积累 30 条新经历、且距上次反思至少 7 天（首次要求这批经历自身跨 7 天）才触发；运行记录按 `persona_instance_id + thread_id` 区分。
+- 运行器先登记 `running`，再调用候选生成器和验证器；成功才追加 `trait_evidence` 并推进 `last_analyzed_sequence`，失败只登记 `failed`，不会推进水位或修改已有证据。
+- 证据使用包含 `persona_instance_id` 的稳定去重键，重复运行不会重复写入，不同实例不会互相吞掉证据；当前只提供显式调用入口，不放进每轮前台请求，也不把结果注入主 Agent。
+- P2 的独立外部入口已加入；`PersonalitySnapshot` 现已可按实例追加保存为版本记录，内容由 seed + accepted evidence 重算得到。它仍未注入主 Agent。
+- 已新增 `tools/run_personality_reflection.py` 作为一次性外部调度入口；它读取当前角色卡和实例 seed，按指定 `thread_id` 调用运行器，适合交给 Windows 任务计划程序，不进入前台聊天循环。
 
 ## 后续可选扩展：Somatic Simulation
 

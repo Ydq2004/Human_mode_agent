@@ -2,7 +2,7 @@
 
 版本：v0.6 执行版
 
-本次更新：Step 6 的进程内有序写入闭环已经完成自动化测试和真实 LLM 开放验收。`ExperienceSlice` 已有第一版不可变 SQLite 持久化，摘要存储契约和人格证据基础设施已建立；人格反思 LLM 和主 Agent 注入仍未启动。
+本次更新：Step 6 的进程内有序写入闭环已经完成自动化测试和真实 LLM 开放验收。`ExperienceSlice` 已有第一版不可变 SQLite 持久化，摘要存储契约和人格证据基础设施已建立；人格反思候选生成与受控保存闭环已完成第一版，主 Agent 注入仍未启动。
 
 目标：把当前记忆模块重构成稳定、可查询、可查重、可更新的长期认知层，服务于通用“类人 Agent 框架”，而不是服务于某个单一角色。
 
@@ -1144,8 +1144,9 @@ Step 5 真实 LLM 验收与延迟基线（已完成）
 -> Step 6 进程内有序、幂等写入闭环（已完成）
 -> 持久化不可变 ExperienceSlice 和提交水位（已完成第一版）
 -> trait_evidence 存储、去重与校验（已完成第一版）
--> trait_evidence 跨经历提取与校验
--> PersonalitySnapshot 规则聚合、版本和回滚
+-> trait_evidence 跨经历提取、校验与受控保存（已完成第一版）
+-> 独立后台/外部调度接入（已完成第一版）
+-> PersonalitySnapshot 规则聚合、版本保存（已完成第一版）和回滚
 -> TRAIT_INSIGHT / _statistic_override 派生渲染
 -> current_personality 动态注入
 -> 人格问卷和派生类型诊断
@@ -1264,7 +1265,7 @@ LLM prompt 出错时，修复顺序是：
 - 新认知事实写入与认知情绪印记写入分开；正常情况下按事件效价、Persona 契合度、直接相关认知情绪和事件开始 mood 计算 30.0~70.0 的初始印象，50.0 / 中性只作失败或证据不足回退。
 - `persona_effect` 以 neutral 为默认；`label_update.label` 描述 Agent 的主观态度，不能复述事实。当前不引入新的 stance schema，也不使用宽泛子串黑名单冒充语义校验。
 - 内在审议、情绪激活、行动倾向和可追踪影响账本作为 Phase 0 之后的独立阶段，不在当前主循环中偷渡实现。
-- 当前 `ExperienceSlice` 已能追加保存并按 id、时间范围和 thread 读取；人格证据存储、来源验证和快照计算第一版已完成，反思 LLM 候选生成第一版已加入，但尚未自动保存证据或动态注入主 Agent。
+- 当前 `ExperienceSlice` 已能追加保存并按 id、时间范围和 thread 读取；人格证据存储、来源验证和快照计算第一版已完成，反思 LLM 候选生成及受控保存运行器已加入，但尚未接入独立调度或动态注入主 Agent。
 - 后续人格层采用 `personality_seed -> trait_evidence -> PersonalitySnapshot -> 派生文本` 的证据链；旧人格洞见不能反向成为新人格证据。
 
 ## 2026-08-30 后续施工边界

@@ -142,6 +142,7 @@ def ensure_personality_store() -> None:
             CREATE TABLE IF NOT EXISTS personality_reflection_runs (
                 reflection_id TEXT PRIMARY KEY,
                 persona_instance_id TEXT NOT NULL,
+                thread_id TEXT,
                 last_analyzed_sequence INTEGER,
                 this_run_start_sequence INTEGER,
                 this_run_end_sequence INTEGER,
@@ -154,6 +155,29 @@ def ensure_personality_store() -> None:
                 rejected_evidence_count INTEGER NOT NULL DEFAULT 0
             )
             """
+        )
+        reflection_columns = {row["name"] for row in conn.execute("PRAGMA table_info(personality_reflection_runs)")}
+        if "thread_id" not in reflection_columns:
+            conn.execute("ALTER TABLE personality_reflection_runs ADD COLUMN thread_id TEXT")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_personality_reflection_scope "
+            "ON personality_reflection_runs (persona_instance_id, thread_id, status, completed_at)"
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS personality_snapshots (
+                snapshot_id TEXT PRIMARY KEY,
+                persona_instance_id TEXT NOT NULL,
+                as_of_timestamp TEXT NOT NULL,
+                trait_values_json TEXT NOT NULL,
+                algorithm_version TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_personality_snapshot_scope "
+            "ON personality_snapshots (persona_instance_id, as_of_timestamp, created_at)"
         )
 
 
@@ -359,6 +383,7 @@ def record_reflection_run(
     *,
     reflection_id: str,
     persona_instance_id: str,
+    thread_id: str | None = None,
     status: str,
     last_analyzed_sequence: int | None = None,
     this_run_start_sequence: int | None = None,
@@ -378,12 +403,13 @@ def record_reflection_run(
         conn.execute(
             """
             INSERT INTO personality_reflection_runs (
-                reflection_id, persona_instance_id, last_analyzed_sequence,
+                reflection_id, persona_instance_id, thread_id, last_analyzed_sequence,
                 this_run_start_sequence, this_run_end_sequence, status,
                 started_at, completed_at, failure_reason, algorithm_version,
                 accepted_evidence_count, rejected_evidence_count
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(reflection_id) DO UPDATE SET
+                thread_id=excluded.thread_id,
                 last_analyzed_sequence=excluded.last_analyzed_sequence,
                 this_run_start_sequence=excluded.this_run_start_sequence,
                 this_run_end_sequence=excluded.this_run_end_sequence,
@@ -393,7 +419,7 @@ def record_reflection_run(
                 rejected_evidence_count=excluded.rejected_evidence_count
             """,
             (
-                reflection_id, persona_instance_id, last_analyzed_sequence,
+                reflection_id, persona_instance_id, thread_id, last_analyzed_sequence,
                 this_run_start_sequence, this_run_end_sequence, status,
                 started_at or _now(), completed_at, failure_reason,
                 algorithm_version, accepted_evidence_count, rejected_evidence_count,
@@ -412,12 +438,152 @@ def get_reflection_run(reflection_id: str) -> dict[str, Any] | None:
     return dict(row) if row else None
 
 
-def get_last_reflection_run(persona_instance_id: str) -> dict[str, Any] | None:
+def get_last_reflection_run(
+    persona_instance_id: str,
+    *,
+    thread_id: str | None = None,
+) -> dict[str, Any] | None:
+    ensure_personality_store()
+    with _connect() as conn:
+        clauses = ["persona_instance_id = ?", "status = 'completed'"]
+        params: list[Any] = [str(persona_instance_id or "").strip()]
+        if thread_id is not None:
+            clauses.append("thread_id = ?")
+            params.append(str(thread_id).strip())
+        row = conn.execute(
+            "SELECT * FROM personality_reflection_runs WHERE "
+            + " AND ".join(clauses)
+            + " ORDER BY completed_at DESC LIMIT 1",
+            params,
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def get_running_reflection_run(
+    persona_instance_id: str,
+    *,
+    thread_id: str | None = None,
+) -> dict[str, Any] | None:
+    """返回同一作用域中正在运行的反思，防止两个后台任务同时扫描并写入。"""
+    ensure_personality_store()
+    with _connect() as conn:
+        clauses = ["persona_instance_id = ?", "status = 'running'"]
+        params: list[Any] = [str(persona_instance_id or "").strip()]
+        if thread_id is not None:
+            clauses.append("thread_id = ?")
+            params.append(str(thread_id).strip())
+        row = conn.execute(
+            "SELECT * FROM personality_reflection_runs WHERE "
+            + " AND ".join(clauses)
+            + " ORDER BY started_at DESC LIMIT 1",
+            params,
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def _snapshot_id(
+    persona_instance_id: str,
+    as_of_timestamp: str,
+    trait_values: dict[str, float],
+    algorithm_version: str,
+) -> str:
+    material = {
+        "persona_instance_id": persona_instance_id,
+        "as_of_timestamp": as_of_timestamp,
+        "trait_values": trait_values,
+        "algorithm_version": algorithm_version,
+    }
+    digest = hashlib.sha256(_json(material).encode("utf-8")).hexdigest()[:24]
+    return f"personality_snapshot_{digest}"
+
+
+def save_personality_snapshot(
+    *,
+    persona_instance_id: str,
+    trait_values: dict[str, float],
+    as_of_timestamp: str,
+    algorithm_version: str = "personality-snapshot-v1",
+    created_at: str | None = None,
+) -> dict[str, Any]:
+    """追加保存一份当前人格快照；相同内容重复保存时保持幂等。"""
+    instance_id = str(persona_instance_id or "").strip()
+    as_of = str(as_of_timestamp or "").strip()
+    version = str(algorithm_version or "").strip()
+    if not instance_id or not as_of or not version:
+        raise ValueError("persona_instance_id、as_of_timestamp 和 algorithm_version 不能为空")
+    if not isinstance(trait_values, dict):
+        raise TypeError("trait_values 必须是字典")
+    clean_values: dict[str, float] = {}
+    for trait_id, value in trait_values.items():
+        try:
+            number = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"特质 {trait_id} 的分数无效") from exc
+        if not 0.0 <= number <= 100.0:
+            raise ValueError(f"特质 {trait_id} 的分数必须在 0~100")
+        clean_values[str(trait_id)] = round(number, 2)
+
+    snapshot_id = _snapshot_id(instance_id, as_of, clean_values, version)
+    ensure_personality_store()
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO personality_snapshots (
+                snapshot_id, persona_instance_id, as_of_timestamp,
+                trait_values_json, algorithm_version, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(snapshot_id) DO NOTHING
+            """,
+            (
+                snapshot_id, instance_id, as_of, _json(clean_values), version,
+                str(created_at or _now()),
+            ),
+        )
+        row = conn.execute(
+            "SELECT * FROM personality_snapshots WHERE snapshot_id = ?",
+            (snapshot_id,),
+        ).fetchone()
+    return dict(row)
+
+
+def _decode_snapshot(row: sqlite3.Row) -> dict[str, Any]:
+    try:
+        values = json.loads(row["trait_values_json"])
+    except (TypeError, json.JSONDecodeError):
+        values = {}
+    return {
+        "snapshot_id": row["snapshot_id"],
+        "persona_instance_id": row["persona_instance_id"],
+        "as_of_timestamp": row["as_of_timestamp"],
+        "trait_values": values if isinstance(values, dict) else {},
+        "algorithm_version": row["algorithm_version"],
+        "created_at": row["created_at"],
+    }
+
+
+def list_personality_snapshots(
+    persona_instance_id: str,
+    *,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 1000:
+        raise ValueError("limit 必须是 1 到 1000 的整数")
+    ensure_personality_store()
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM personality_snapshots WHERE persona_instance_id = ? "
+            "ORDER BY as_of_timestamp ASC, snapshot_id ASC LIMIT ?",
+            (str(persona_instance_id or "").strip(), limit),
+        ).fetchall()
+    return [_decode_snapshot(row) for row in rows]
+
+
+def get_latest_personality_snapshot(persona_instance_id: str) -> dict[str, Any] | None:
     ensure_personality_store()
     with _connect() as conn:
         row = conn.execute(
-            "SELECT * FROM personality_reflection_runs WHERE persona_instance_id = ? "
-            "AND status = 'completed' ORDER BY completed_at DESC LIMIT 1",
+            "SELECT * FROM personality_snapshots WHERE persona_instance_id = ? "
+            "ORDER BY as_of_timestamp DESC, snapshot_id DESC LIMIT 1",
             (str(persona_instance_id or "").strip(),),
         ).fetchone()
-    return dict(row) if row else None
+    return _decode_snapshot(row) if row else None

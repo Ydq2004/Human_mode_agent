@@ -95,6 +95,25 @@ class PersonalityStoreTests(unittest.TestCase):
         latest = personality_store.get_last_reflection_run("persona-a")
         self.assertEqual(latest["last_analyzed_sequence"], 20)
         self.assertEqual(latest["accepted_evidence_count"], 2)
+        self.assertEqual(latest["persona_instance_id"], "persona-a")
+        self.assertEqual(latest["thread_id"], None)
+
+    def test_personality_snapshot_is_append_only_and_idempotent(self):
+        first = personality_store.save_personality_snapshot(
+            persona_instance_id="persona-a",
+            trait_values={"openness": 50.0},
+            as_of_timestamp="2026-08-31T12:00:00",
+            created_at="2026-08-31T12:01:00",
+        )
+        second = personality_store.save_personality_snapshot(
+            persona_instance_id="persona-a",
+            trait_values={"openness": 50.0},
+            as_of_timestamp="2026-08-31T12:00:00",
+            created_at="2026-08-31T12:02:00",
+        )
+        self.assertEqual(first["snapshot_id"], second["snapshot_id"])
+        self.assertEqual(len(personality_store.list_personality_snapshots("persona-a")), 1)
+        self.assertEqual(personality_store.get_latest_personality_snapshot("persona-a")["trait_values"]["openness"], 50.0)
 
 
 if __name__ == "__main__":

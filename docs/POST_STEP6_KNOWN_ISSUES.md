@@ -317,8 +317,15 @@ MemoryEntity 的 `created_at` 和 `last_mentioned_at` 只负责告诉 Agent “�
 ## 当前人格演化施工入口
 
 `memory/personality_store.py` 已建立 `personality_seed` 和 `trait_evidence` 的 SQLite 存储地基。
-目前只保存不可变出生人格和追加式证据，不调用 LLM、不修改当前人格。下一步才是从多段已提交
-ExperienceSlice 提取并校验证据，再实现 `PersonalitySnapshot` 的规则聚合。
+当前已完成从多段已提交 ExperienceSlice 生成候选、代码验证并追加保存证据的第一版闭环；
+它仍不修改当前人格，也不注入主 Agent。下一步是接入独立后台/外部调度，再实现
+`PersonalitySnapshot` 的版本化持久化。
 
 P1 纯代码基础设施现已完成：特质注册表、证据验证器、反思运行位置记录、快照计算器和边界测试
-已加入。P2 的候选生成器已加入，但尚未自动保存证据或让人格结果进入主 Agent。
+已加入。P2 的候选生成器和 `personality_reflection_runner.py` 已加入；运行器按新增经历和时间间隔
+触发，成功才保存合格证据，失败不会推进分析水位。证据去重键包含实例标识，不同实例相互隔离。
+人格结果仍未进入主 Agent。
+
+`tools/run_personality_reflection.py` 提供一次性外部调度入口。它需要明确的 `thread_id`，
+适合由系统定时任务调用；当前尚未做跨线程的实例级合并反思。反思成功后会追加保存
+`personality_snapshots` 版本记录，但仍不会修改角色卡或注入主 Agent。

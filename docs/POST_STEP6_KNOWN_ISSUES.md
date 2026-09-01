@@ -279,7 +279,7 @@ MemoryEntity 的 `created_at` 和 `last_mentioned_at` 只负责告诉 Agent “�
 - 人格演化继续以 `personality_seed -> trait_evidence -> PersonalitySnapshot -> 派生文本` 为准；它依赖 ExperienceSlice 持久化，不与情景记忆抢先施工。
 - 已经修复并通过测试的问题不放入本清单，避免把历史故障误当成当前待办。
 
-## 2026-08-30 后续施工计划（最新）
+## 2026-08-30 后续施工计划（历史记录，当前进度见 CURRENT_HANDOFF）
 
 ### 阶段 2：跨进程提交账本恢复（P0）
 
@@ -313,3 +313,12 @@ MemoryEntity 的 `created_at` 和 `last_mentioned_at` 只负责告诉 Agent “�
 - 外部 `tools/run_periodic_summaries.py` 会在所有周期处理完后，以非零退出码报告本次失败，
   便于 Windows 任务计划程序发现问题。
 - 迟到切片形成新的来源批次，旧摘要和原始经历不会被覆盖或删除。
+
+## 当前人格演化施工入口
+
+`memory/personality_store.py` 已建立 `personality_seed` 和 `trait_evidence` 的 SQLite 存储地基。
+目前只保存不可变出生人格和追加式证据，不调用 LLM、不修改当前人格。下一步才是从多段已提交
+ExperienceSlice 提取并校验证据，再实现 `PersonalitySnapshot` 的规则聚合。
+
+P1 纯代码基础设施现已完成：特质注册表、证据验证器、反思运行位置记录、快照计算器和边界测试
+已加入。P2 的候选生成器已加入，但尚未自动保存证据或让人格结果进入主 Agent。

@@ -285,6 +285,8 @@ def list_experience_slices(
     start_at: str | None = None,
     end_at: str | None = None,
     thread_id: str | None = None,
+    after_sequence: int | None = None,
+    before_sequence: int | None = None,
     limit: int = 100,
 ) -> list[StoredExperienceSlice]:
     """按时间范围读取一组经历，结果按事件时间和顺序排列。"""
@@ -302,6 +304,16 @@ def list_experience_slices(
     if thread_id is not None:
         clauses.append("thread_id = ?")
         params.append(str(thread_id).strip())
+    if after_sequence is not None:
+        if isinstance(after_sequence, bool) or not isinstance(after_sequence, int) or after_sequence < 0:
+            raise ValueError("after_sequence 必须是非负整数或 None")
+        clauses.append("event_sequence > ?")
+        params.append(after_sequence)
+    if before_sequence is not None:
+        if isinstance(before_sequence, bool) or not isinstance(before_sequence, int) or before_sequence < 0:
+            raise ValueError("before_sequence 必须是非负整数或 None")
+        clauses.append("event_sequence <= ?")
+        params.append(before_sequence)
 
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     ensure_experience_store()

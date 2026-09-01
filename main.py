@@ -56,6 +56,7 @@ from memory.experience_store import (
 from memory.recall_tools import recall_call_budget, recall_memory
 from memory.summary_scheduler import generate_missing_period_summaries
 from memory import commit_store
+from memory.personality_store import ensure_personality_seed_from_persona
 
 
 _DEBUG_SEPARATOR = "-" * 72
@@ -948,6 +949,10 @@ def main():
         retry_understanding_llm,
         appraisal_llm,
     ) = create_agent_from_persona(tools=tools)
+
+    # 角色卡只在实例首次启动时复制为出生人格；后续修改角色卡不会覆盖 seed。
+    # 当前只建立人格演化的输入，不把人格快照注入主 Agent。
+    ensure_personality_seed_from_persona(persona)
 
     thread_id = DEFAULT_THREAD_ID
     # 事件序号属于该对话线程的长期经历顺序。启动时从 SQLite 继续取号，

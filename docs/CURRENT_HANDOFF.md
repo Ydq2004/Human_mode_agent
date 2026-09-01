@@ -57,7 +57,7 @@
 代码已经完成感知理解、自动认知唤起、主 Agent、`ExperienceSlice`、后台 `ExperienceAppraisal`、规则计算和进程内有序提交闭环。主回复不等待 appraisal；评价完成后由独立 `CommitWorker` 按事件序号提交 mood、事实认知、认知情绪和一跳关系。
 
 - 回应前：`core/context_builder.py` 使用 `PerceptionFrame`、精简后的 `PerceptionUnderstanding` 和新的 `memory.retrieval_engine`，把有限、非穷尽的结果作为自动认知唤起，返回结构化 `activated_memory_refs` 和 `memory_activation_state`。
-- 回应后：`ExperienceSlice` 记录感知、理解、自动唤起引用、Agent 当时可见的能力快照、认知访问状态、AgentAction、观察、事件开始状态快照和结构化 `preceding_context`。现在会在提交后台评价前追加写入 `sql_db.db` 的 `experience_slices` 表，并支持按 id、时间范围和线程读取。`memory/experience_summary_store.py` 保存摘要，`memory/experience_summary_builder.py` 已提供不调用 LLM 的片段/每日/周/月稳定生成器；启动时周期检查已接入，外部定时调度和人格证据仍未实现。
+- 回应后：`ExperienceSlice` 记录感知、理解、自动唤起引用、Agent 当时可见的能力快照、认知访问状态、AgentAction、观察、事件开始状态快照和结构化 `preceding_context`。现在会在提交后台评价前追加写入 `sql_db.db` 的 `experience_slices` 表，并支持按 id、时间范围和线程读取。`memory/experience_summary_store.py` 保存摘要，`memory/experience_summary_builder.py` 已提供不调用 LLM 的片段/每日/周/月稳定生成器；启动时周期检查、外部定时调度和人格证据存储地基已实现。
 - 后台 appraisal 终态、提交状态、结果和错误会写入同一 SQLite 的 `commit_ledger` 表。它能在重启后告诉我们任务停在哪里；当前只记录和查询，不会自动重跑未完成任务。
 - `process_perception_event` 冻结经历后立即向单 worker FIFO 队列提交 appraisal，只把 `pending/completed/failed` 任务真值和稳定 job id 返回给调用方，不等待后台 LLM。
 - CLI 先显示主回复，再在后续事件边界输出已经完成的后台结果；后台异常保存在任务记录中，不伪装成 fallback，也不在线程中静默消失。
@@ -91,7 +91,7 @@ PerceptionEvent
 
 当前仍未完成：
 
-- ExperienceSlice 的第一版追加存储和跨进程读取已完成；提交账本、SQLite/Chroma 存储修复队列、摘要存储契约、无 LLM 的片段/每日/周/月摘要生成器、启动周期检查和只读 `recall_memory` 工具已完成；外部定时调度和人格证据仍未完成。
+- ExperienceSlice 的第一版追加存储和跨进程读取已完成；提交账本、SQLite/Chroma 存储修复队列、摘要存储契约、无 LLM 的片段/每日/周/月摘要生成器、启动周期检查、外部定时调度和人格证据存储/验证/快照计算第一版已完成；人格反思 LLM 和主 Agent 注入仍未完成。
 - 周期摘要调度规则已接入启动流程：启动时检查昨天、上个完整自然周和上个完整自然月；来源切片未变化时跳过，发现迟到新切片时生成新版本。该检查只读 SQLite、不会调用 LLM；检查失败不会阻塞主 Agent 启动。以后仍可由外部定时任务复用同一入口。
 
 已补齐：
@@ -216,7 +216,14 @@ Agent 明确发起只读查询 -> 搜索当前整合认知和情景摘要
 
 ## Step 6 之后的人格演化统一方案
 
-人格演化属于 Phase 0 之后的慢速反思层，当前不修改人格代码。角色卡只是创建 Agent 实例时的模板；只有首次初始化时保存的 `personality_seed` 才是该实例不可被静默覆盖的出生人格。
+人格演化属于 Phase 0 之后的慢速反思层。当前已完成 P1 纯代码基础设施：
+`memory/personality_store.py` 保存不可变的 `personality_seed`、追加式 `trait_evidence`
+和反思运行位置；`memory/personality_traits.py` 定义第一批连续特质，
+`memory/personality_validator.py` 校验证据来源、跨度、反证和变化上限，
+`memory/personality_calculator.py` 根据 seed 与 accepted 证据计算快照。
+这些模块尚未把任何结果接入主 Agent，也不会自动改变人格。主程序首次启动时会调用
+`ensure_personality_seed_from_persona()`，只把角色卡复制为一次性的出生人格；角色卡只是创建 Agent 实例时的模板；
+只有首次初始化时保存的 `personality_seed` 才是该实例不可被静默覆盖的出生人格。
 
 权威数据流固定为：
 
@@ -232,14 +239,29 @@ ExperienceSlice（不可变原始经历）
 
 边界：
 
-1. ExperienceSlice 已有第一版追加式持久化，并保留 `slice_id/event_id/action_id/observation_id` 等来源引用；人格反思启动前仍需完成存储验收。
-2. `trait_evidence` 与其他结构可以住在同一个 SQLite；“独立”表示职责和表结构独立，不表示新建数据库。它必须保存来源、反证、作用域、行为来源、去重状态和算法版本。
+1. ExperienceSlice 已有第一版追加式持久化，并保留 `slice_id/event_id/action_id/observation_id` 等来源引用。
+2. `trait_evidence` 与其他结构共用同一个 SQLite；当前已完成追加、去重和来源校验，保存反证、作用域、行为来源和算法版本。
 3. `TRAIT_INSIGHT` 未来可以作为新的记忆类型进入普通检索，但它只是 `PersonalitySnapshot` 的自然语言派生摘要。人格反思不能把旧 `TRAIT_INSIGHT` 当成新的行为证据，防止自我强化循环。
 4. `PersonalitySnapshot` 是当前人格的结构化权威状态；`_statistic_override` 只能是它的文本渲染，不能由 LLM 随意覆盖。
 5. 人格 LLM 只输出特质、方向、强度、作用域、行为来源和证据引用等语义；最终数字、变化上限、去重、版本和回滚由代码负责。
-6. 人格证据来自多段已经提交的独立经历。Agent 自报、单轮输出、任务要求或 Persona 风格执行、旧反思结论都不能单独证明人格变化。
+6. 人格证据来自多段已经提交的独立经历。当前纯代码验证器要求至少 3 条经历并跨越至少 3 天；Agent 自报、单轮输出、任务要求或 Persona 风格执行、旧反思结论都不能单独证明人格变化。
 7. 框架层定义连续特质 registry 的协议、行为锚、未知状态和聚合规则；persona 层提供有依据的出生初值并选择已定义扩展；实例层保存证据与当前版本。Big Five、荣格八维或自定义维度现在不拍板，MBTI 只可作派生展示或诊断。
 8. 当前人格接入后，每轮只注入 `current_personality`，不能再把出生人格作为第二份行为权重重复注入。身份、知识、安全和副作用边界不随人格演化改写。
+
+P1 当前边界：
+
+- 第一批特质为 `openness`、`conscientiousness`、`extraversion`，仅作为可扩展注册表，不代表永久锁定 Big Five。
+- 证据验证默认要求至少 3 条经历并跨越至少 3 天；反面证据会降低置信度，过强时拒绝。
+- 快照变化按 `strength × confidence × trait_delta_scale` 计算，单次反思对单个特质不超过 5 分。
+- `ExperienceSlice` 目前只有 `thread_id`，验证器不会把它错误当成 `persona_instance_id`；实例归属统一后再增加跨线程边界。
+- P1 不调用 LLM、不接入主 Agent、不增加 `ExperienceSlice.autonomy_level`。
+
+P2 当前进度：
+
+- `memory/personality_reflection_llm.py` 已加入候选生成器。它只读取原始 ExperienceSlice，
+  要求 LLM 返回候选证据数组；不写 `trait_evidence`、不计算最终分数、不修改主 Agent。
+- 反思候选仍必须经过 `personality_validator.py`；非法 JSON 或越权字段不会直接进入人格状态。
+- 当前尚未加入自动反思触发器和后台调度；P2 先完成候选契约与真实/极限测试，再接入运行流程。
 
 ## 后续可选扩展：Somatic Simulation
 

@@ -41,9 +41,9 @@
 
     "model": {
       "provider": "中转站",
-      "model_name": "deepseek-v4-flash",
+      "model_name": "gemini-3.7-flash",
       "temperature": 0.8,
-      "base_url": "https://api.deepseek.com",
-      "api_key_env": "DEEPSEEK_API_KEY"
+      "base_url": "https://tengsuan.xiweinet.com/v1",
+      "api_key_env": "GEMINI_API_KEY"
     }
   }

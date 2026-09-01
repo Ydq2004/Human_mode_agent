@@ -2,7 +2,7 @@
 
 版本：v0.6 执行版
 
-本次更新：Step 6 的进程内有序写入闭环已经完成自动化测试和真实 LLM 开放验收。`ExperienceSlice` 已有第一版不可变 SQLite 持久化，摘要存储契约已建立；人格反思和多时间尺度情景记忆仍必须等存储验收和查询边界稳定后再启动。
+本次更新：Step 6 的进程内有序写入闭环已经完成自动化测试和真实 LLM 开放验收。`ExperienceSlice` 已有第一版不可变 SQLite 持久化，摘要存储契约和人格证据基础设施已建立；人格反思 LLM 和主 Agent 注入仍未启动。
 
 目标：把当前记忆模块重构成稳定、可查询、可查重、可更新的长期认知层，服务于通用“类人 Agent 框架”，而不是服务于某个单一角色。
 
@@ -932,7 +932,7 @@ Phase 0 的事实写入与认知情绪印记写入分开处理：事实候选由
 - 自动化契约与集成测试已覆盖有序水位、失败推进、进程内幂等、方向规范化、same 情绪转换、related 建边和提交时情绪重算；当前完整测试为 `124/124` 通过。
 - 每轮无冲击时的基线回归已接入：`emotion.appraisal_rules.compute_committed_mood_change` 只在 `mood_impact == 0` 时向基线移动一步，`emotion.manager.commit_mood_effect` 在同一 SQLite 事务中写入最终值。`begin_perception_event` 的离线时间回归仍是另一条独立机制。
 - 真实 LLM 与真实存储开放验收已完成：`create/update/reinforce`、已有认知情绪更新、`related` 创建独立实体并写入一跳关系、正负 mood 冲击、零冲击基线回归、跨重启召回和退出排空均已实际到达；一次验收中的 6 个任务按事件序号全部进入 `committed`，没有 `commit_failed`。
-- Step 6 到此收口。不可变 ExperienceSlice 存储和跨进程提交账本已有第一版；SQLite/Chroma 一致性检查与有界修复线程已完成阶段 3 第一版。摘要存储、无 LLM 的片段/每日/周/月摘要生成器、启动周期检查和只读经历查询已完成第一版，摘要生成尝试状态和有限重试已加入；周/月深层反思和人格演化仍未完成。
+- Step 6 到此收口。不可变 ExperienceSlice 存储和跨进程提交账本已有第一版；SQLite/Chroma 一致性检查与有界修复线程已完成阶段 3 第一版。摘要存储、无 LLM 的片段/每日/周/月摘要生成器、启动周期检查和只读经历查询已完成第一版，摘要生成尝试状态和有限重试已加入；人格证据存储、验证和纯代码快照计算已完成第一版，周/月深层反思 LLM 与主 Agent 注入仍未完成。
 
 任务：
 
@@ -1120,8 +1120,8 @@ TRAIT_INSIGHT / _statistic_override
 -> TRAIT_INSIGHT / _statistic_override
 ```
 
-1. `ExperienceSlice` 是原始经历证据。当前实现没有持久化它；人格反思启动前必须先增加不可变经历存储，并保留 `slice_id`、`event_id`、`action_id`、`observation_id` 和事件状态快照。
-2. `trait_evidence` 是独立职责的数据表，但可以和其他结构共用同一个 SQLite。至少应保留特质 id、方向、强度、作用域、行为来源、直接证据、反证、去重键、算法版本和生成时间。
+1. `ExperienceSlice` 是原始经历证据，当前已经追加保存到 SQLite，并保留 `slice_id`、`event_id`、`action_id`、`observation_id` 和事件状态快照。
+2. `trait_evidence` 是独立职责的数据表，当前已在 `memory/personality_store.py` 中建立并与其他结构共用同一个 SQLite。它保留特质 id、方向、强度、作用域、行为来源、直接证据、反证、去重键、算法版本和生成时间。
 3. Agent 自报人格、单轮回复、任务明确要求的执行方式、Persona 风格执行以及旧反思结论，都不能单独成为人格变化证据。只有跨多段独立经历反复出现、并能区分自主选择与被要求执行的模式，才进入规则聚合。
 4. `TRAIT_INSIGHT` 未来可以作为新的 `MemoryType` 进入普通记忆检索，但它只是当前人格版本的可读摘要。后续反思不能把旧 `TRAIT_INSIGHT` 当成新的行为证据，也不能通过 mention_count 或 emotion_score 间接增加人格权重。
 5. 人格 LLM 只输出语义候选，例如特质、方向、强度、作用域、行为来源、证据引用、反证和不确定性。代码负责引用白名单、去重、数值映射、单次变化上限、版本、回滚和最终提交。
@@ -1142,8 +1142,9 @@ TRAIT_INSIGHT / _statistic_override
 ```text
 Step 5 真实 LLM 验收与延迟基线（已完成）
 -> Step 6 进程内有序、幂等写入闭环（已完成）
--> 持久化不可变 ExperienceSlice 和提交水位
--> trait_evidence 提取与校验
+-> 持久化不可变 ExperienceSlice 和提交水位（已完成第一版）
+-> trait_evidence 存储、去重与校验（已完成第一版）
+-> trait_evidence 跨经历提取与校验
 -> PersonalitySnapshot 规则聚合、版本和回滚
 -> TRAIT_INSIGHT / _statistic_override 派生渲染
 -> current_personality 动态注入
@@ -1263,7 +1264,7 @@ LLM prompt 出错时，修复顺序是：
 - 新认知事实写入与认知情绪印记写入分开；正常情况下按事件效价、Persona 契合度、直接相关认知情绪和事件开始 mood 计算 30.0~70.0 的初始印象，50.0 / 中性只作失败或证据不足回退。
 - `persona_effect` 以 neutral 为默认；`label_update.label` 描述 Agent 的主观态度，不能复述事实。当前不引入新的 stance schema，也不使用宽泛子串黑名单冒充语义校验。
 - 内在审议、情绪激活、行动倾向和可追踪影响账本作为 Phase 0 之后的独立阶段，不在当前主循环中偷渡实现。
-- 当前 `ExperienceSlice` 已能追加保存并按 id、时间范围和 thread 读取；人格反思仍必须等待存储验收、摘要来源和查询边界稳定后再启动。
+- 当前 `ExperienceSlice` 已能追加保存并按 id、时间范围和 thread 读取；人格证据存储、来源验证和快照计算第一版已完成，反思 LLM 候选生成第一版已加入，但尚未自动保存证据或动态注入主 Agent。
 - 后续人格层采用 `personality_seed -> trait_evidence -> PersonalitySnapshot -> 派生文本` 的证据链；旧人格洞见不能反向成为新人格证据。
 
 ## 2026-08-30 后续施工边界

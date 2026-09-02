@@ -1,6 +1,6 @@
 # CURRENT_HANDOFF
 
-更新时间：2026-08-30
+更新时间：2026-09-02
 
 用途：新会话开始时，先读取 `AGENTS.md`、`docs/Phase0_Memory_Architecture_Redesign.md` 和本文件，再继续工作。
 
@@ -91,7 +91,7 @@ PerceptionEvent
 
 当前仍未完成：
 
-- ExperienceSlice 的第一版追加存储和跨进程读取已完成；提交账本、SQLite/Chroma 存储修复队列、摘要存储契约、无 LLM 的片段/每日/周/月摘要生成器、启动周期检查、外部定时调度和人格证据存储/验证/快照计算第一版已完成；人格反思候选生成与受控保存闭环已完成第一版，主 Agent 注入仍未完成。
+- ExperienceSlice 的第一版追加存储和跨进程读取已完成；提交账本、SQLite/Chroma 存储修复队列、摘要存储契约、无 LLM 的片段/每日/周/月摘要生成器、启动周期检查、外部定时调度和人格证据存储/验证/快照计算第一版已完成；人格反思候选生成、受控保存、快照版本保存和最新快照的主 Agent 动态注入已完成第一版。
 - 周期摘要调度规则已接入启动流程：启动时检查昨天、上个完整自然周和上个完整自然月；来源切片未变化时跳过，发现迟到新切片时生成新版本。该检查只读 SQLite、不会调用 LLM；检查失败不会阻塞主 Agent 启动。以后仍可由外部定时任务复用同一入口。
 
 已补齐：
@@ -263,9 +263,11 @@ P2 当前进度：
 - 反思候选仍必须经过 `personality_validator.py`；非法 JSON 或越权字段不会直接进入人格状态。
 - `memory/personality_reflection_runner.py` 已加入受控运行器：默认至少积累 30 条新经历、且距上次反思至少 7 天（首次要求这批经历自身跨 7 天）才触发；运行记录按 `persona_instance_id + thread_id` 区分。
 - 运行器先登记 `running`，再调用候选生成器和验证器；成功才追加 `trait_evidence` 并推进 `last_analyzed_sequence`，失败只登记 `failed`，不会推进水位或修改已有证据。
-- 证据使用包含 `persona_instance_id` 的稳定去重键，重复运行不会重复写入，不同实例不会互相吞掉证据；当前只提供显式调用入口，不放进每轮前台请求，也不把结果注入主 Agent。
-- P2 的独立外部入口已加入；`PersonalitySnapshot` 现已可按实例追加保存为版本记录，内容由 seed + accepted evidence 重算得到。它仍未注入主 Agent。
+- 证据使用包含 `persona_instance_id` 的稳定去重键，重复运行不会重复写入，不同实例不会互相吞掉证据；当前只提供显式调用入口，不放进每轮前台请求。
+- `personality_reflection_llm.py` 会把少数明确同义枚举（如 `positive/negative`、`autonomous`）转换为正式值，并在 Prompt 中明确要求正面证据跨至少 3 天；未知写法仍由 validator 拒绝。`tools/run_personality_reflection.py --reprocess` 可用于人工重新分析已经处理过的经历。
+- P2 的独立外部入口已加入；`PersonalitySnapshot` 现已可按实例追加保存为版本记录，内容由 seed + accepted evidence 重算得到；最新快照会以受控的 `current_personality` 文本进入主 Agent 动态上下文。
 - 已新增 `tools/run_personality_reflection.py` 作为一次性外部调度入口；它读取当前角色卡和实例 seed，按指定 `thread_id` 调用运行器，适合交给 Windows 任务计划程序，不进入前台聊天循环。
+- 人格演化实现先收口；真实 LLM 长期效果、出生特质基线和多次跨日积累等未验证内容记录在 `docs/PERSONALITY_EVOLUTION_UNVERIFIED.md`。
 
 ## 后续可选扩展：Somatic Simulation
 
@@ -389,6 +391,38 @@ ExperienceSlice 完整记录：
 6. **通用框架与成人扩展分离**：框架层只定义 `body_state` 的协议（key-value 存储、delta 更新规则、LLM 评价接口）。具体字段（genital_arousal、moisture 等）和身体模型放入可选的成人扩展配置。
 
 实现优先级：该模块在 ExperienceSlice 持久化、情景摘要和人格证据**全部稳定后**再接入，确保身体状态变化能像其他经历一样被回溯、查询和用于长期反思。
+
+## 已完成的两项基础修正
+
+- 一跳关系邻居现在使用 `weight × confidence` 作为关系分数；直接命中始终优先，关系分数只用于邻居之间排序。
+- `memory/vector_store.py` 在 `EMBEDDING_LOCAL_FILES_ONLY=True` 时设置 Hugging Face/Transformers 离线模式，并要求使用本机缓存权重。断网启动不会再主动访问 Hub；本地权重缺失时会直接报错。
+
+## 后续方向：高级模型咨询工具
+
+主 Agent 当前使用 Flash 类模型，遇到复杂架构、调试或长链路问题时，未来可以调用一个独立的
+“高级模型咨询”工具，把难题交给更强的模型分析。这是模型能力升级通道，不是第二个主 Agent。
+
+基本流程：
+
+```text
+主 Agent 判断问题过于复杂
+-> 调用高级模型咨询工具
+-> 咨询模型读取当前问题、必要上下文和真实能力快照
+-> 返回分析、方案和不确定性
+-> 主 Agent 根据结果组织最终回复或调用本地工具
+```
+
+边界：
+
+- 咨询模型只提供分析和建议，不直接写文件、改数据库、调用设备或执行其他副作用。
+- 实际修改仍必须经过本地文件工具、记忆提交链或其他明确工具，并返回真实成功结果。
+- 咨询请求应尽量只携带当前问题和必要来源，不能默认发送全部历史或隐藏推理。
+- 咨询失败、超时或返回不确定时，主 Agent 必须保留不确定性，不能把建议当成已经完成的事实。
+- 咨询调用和结果应像其他工具一样记录为 `AgentAction` 与 `observation`，进入对应的 `ExperienceSlice`。
+- 咨询模型使用独立的模型配置、API 密钥、超时和调用预算，不能影响主 Agent、感知理解或后台评价。
+
+当前只记录方案，不接入实现。正式施工前需要确定：复杂问题触发条件、请求上下文范围、返回格式、
+调用预算、失败回退，以及是否向用户显示“已请求高级模型咨询”。
 
 ## 下一步施工顺序
 

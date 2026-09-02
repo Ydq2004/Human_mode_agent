@@ -267,17 +267,28 @@ MemoryEntity 的 `created_at` 和 `last_mentioned_at` 只负责告诉 Agent “�
 
 ### 一跳关系排序
 
-`MemoryRelation.weight/confidence` 尚未参与一跳扩展预算和排序。当前不能长期把所有关系邻居视为同等重要。该问题属于检索质量债，不应混进 Step 6 提交语义；ExperienceSlice 持久化完成后再单独建立排序基准测试。
+`MemoryRelation.weight/confidence` 已参与一跳邻居排序，综合分为 `weight × confidence`；直接命中仍优先于关系邻居。后续仍可继续校准关系扩展预算。
 
 ### Embedding 离线启动
 
-本地已有 BGE 模型权重，但启动时仍可能访问 Hugging Face Hub 做文件确认并产生网络依赖。后续应统一模型缓存路径和离线加载策略，并测试在完全断网环境下启动；不能把代理或 `HF_TOKEN` 当成框架运行的必要条件。
+本地 BGE 模型现已通过 `EMBEDDING_LOCAL_FILES_ONLY=True` 设置 Hugging Face/Transformers 离线模式；已验证本机缓存权重可以正常导入。后续仍需在真正断网环境下做一次完整主程序启动测试。
 
 ## 不在本文件中重复的内容
 
 - Step 6 自身的 resolver/judge/store、有序提交、mood 提交、SQLite/Chroma 同步和 `same` 情绪信号转换，继续以 `docs/Phase0_Memory_Architecture_Redesign.md` 为准。
 - 人格演化继续以 `personality_seed -> trait_evidence -> PersonalitySnapshot -> 派生文本` 为准；它依赖 ExperienceSlice 持久化，不与情景记忆抢先施工。
 - 已经修复并通过测试的问题不放入本清单，避免把历史故障误当成当前待办。
+
+## 后续方向：高级模型咨询工具
+
+当前主 Agent 使用 Flash 类模型。未来可以增加一个独立的高级模型咨询工具，
+在主 Agent 遇到复杂架构、调试或长链路问题时提供分析建议。
+
+它只返回建议，不直接执行文件、数据库、设备或网络副作用；实际操作仍由本地工具和现有提交链完成。
+咨询调用需要独立的模型配置、API 密钥、超时和次数预算，失败时返回明确的不确定状态。
+调用和返回结果应进入 `ExperienceSlice`，以便后续回溯“Agent 为什么采用某个方案”。
+
+该方向目前只完成架构记录，尚未实现。施工前需要先确定触发条件、上下文范围、返回格式和用户可见性。
 
 ## 2026-08-30 后续施工计划（历史记录，当前进度见 CURRENT_HANDOFF）
 
@@ -318,14 +329,19 @@ MemoryEntity 的 `created_at` 和 `last_mentioned_at` 只负责告诉 Agent “�
 
 `memory/personality_store.py` 已建立 `personality_seed` 和 `trait_evidence` 的 SQLite 存储地基。
 当前已完成从多段已提交 ExperienceSlice 生成候选、代码验证并追加保存证据的第一版闭环；
-它仍不修改当前人格，也不注入主 Agent。下一步是接入独立后台/外部调度，再实现
-`PersonalitySnapshot` 的版本化持久化。
+它不修改角色卡，但已能保存 `PersonalitySnapshot` 版本并将最新快照的渲染文本以动态上下文
+形式提供给主 Agent。
 
 P1 纯代码基础设施现已完成：特质注册表、证据验证器、反思运行位置记录、快照计算器和边界测试
 已加入。P2 的候选生成器和 `personality_reflection_runner.py` 已加入；运行器按新增经历和时间间隔
 触发，成功才保存合格证据，失败不会推进分析水位。证据去重键包含实例标识，不同实例相互隔离。
-人格结果仍未进入主 Agent。
+人格结果已通过受控的 `current_personality` 动态上下文进入主 Agent；缺少快照时回退到角色卡中的静态人格描述。
 
 `tools/run_personality_reflection.py` 提供一次性外部调度入口。它需要明确的 `thread_id`，
 适合由系统定时任务调用；当前尚未做跨线程的实例级合并反思。反思成功后会追加保存
-`personality_snapshots` 版本记录，但仍不会修改角色卡或注入主 Agent。
+`personality_snapshots` 版本记录，但不会修改角色卡。
+
+2026-09-02 使用现有 `project_test_001` 做了诊断性反思：共有 26 条经历、覆盖约 3 天；
+在降低触发门槛后，LLM 能提出候选，但所选正面证据没有跨满 3 天，全部被 validator 拒绝。
+当前实例的 `personality_seed` 也没有初始 `traits`，所以即使写入证据，快照也没有可计算的特质分数。
+这不是降低校验标准的理由；后续需要补充角色层的出生特质基线，并积累真实跨日经历。

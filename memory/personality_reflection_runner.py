@@ -85,11 +85,14 @@ def run_personality_reflection(
     min_new_slices: int = DEFAULT_MIN_NEW_SLICES,
     min_interval_days: float = DEFAULT_MIN_INTERVAL_DAYS,
     now: str | datetime | None = None,
+    reprocess: bool = False,
 ) -> dict[str, Any]:
     """按触发条件运行一次反思，并返回可记录/可测试的结果字典。
 
     触发条件很保守：默认至少 30 条新经历，并且距上次完成反思至少 7 天；
     第一次反思则要求这批经历自身至少跨 7 天。失败不会推进已分析序号。
+    ``reprocess=True`` 只用于人工补测/提示词修正，会显式忽略已有水位，
+    不应作为日常调度默认值。
     """
     instance_id = str(persona_instance_id or "").strip()
     if not instance_id:
@@ -111,7 +114,9 @@ def run_personality_reflection(
         return {"status": "skipped", "reason": "already_running", "accepted_count": 0}
 
     latest = personality_store.get_last_reflection_run(instance_id, thread_id=scoped_thread_id)
-    last_sequence = int(latest["last_analyzed_sequence"]) if latest and latest.get("last_analyzed_sequence") is not None else None
+    last_sequence = None
+    if not reprocess and latest and latest.get("last_analyzed_sequence") is not None:
+        last_sequence = int(latest["last_analyzed_sequence"])
     slices = _scope_slices(thread_id=scoped_thread_id, last_sequence=last_sequence)
     if not slices:
         return {"status": "skipped", "reason": "no_new_slices", "accepted_count": 0}
@@ -127,7 +132,7 @@ def run_personality_reflection(
     if any(item is None for item in event_times):
         return {"status": "skipped", "reason": "invalid_slice_time", "accepted_count": 0}
     current_time = _now(now)
-    if latest:
+    if latest and not reprocess:
         completed_at = _parse_time(latest.get("completed_at"))
         if completed_at is None or current_time - completed_at < timedelta(days=min_interval_days):
             return {"status": "skipped", "reason": "reflection_interval_not_reached", "accepted_count": 0}

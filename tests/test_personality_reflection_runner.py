@@ -119,6 +119,29 @@ class PersonalityReflectionRunnerTests(unittest.TestCase):
         self.assertEqual(failed["status"], "failed")
         self.assertIsNone(failed["last_analyzed_sequence"])
 
+    def test_reprocess_can_explicitly_reread_processed_slices(self):
+        slices = _make_slices(3)
+        content = json.dumps([{
+            "trait_id": "openness", "direction": "increase", "strength": 0.2,
+            "scope": "general", "behavior_source": "autonomous_choice",
+            "evidence_slice_ids": [item.slice_id for item in slices],
+            "counter_evidence_slice_ids": [], "confidence": 0.7, "uncertainty": "",
+        }], ensure_ascii=False)
+        llm = _FakeLLM(content)
+        first = run_personality_reflection(
+            persona_instance_id="persona-a", thread_id="thread-a", llm=llm,
+            min_new_slices=3, min_interval_days=0, now="2026-08-10T00:00:00",
+        )
+        self.assertEqual(first["status"], "completed")
+        second = run_personality_reflection(
+            persona_instance_id="persona-a", thread_id="thread-a", llm=llm,
+            min_new_slices=3, min_interval_days=0, now="2026-08-10T00:00:00",
+            reprocess=True,
+        )
+        self.assertEqual(second["status"], "completed")
+        self.assertEqual(second["accepted_count"], 0)
+        self.assertEqual(llm.calls, 2)
+
     def test_interval_blocks_second_reflection(self):
         _make_slices(3)
         llm = _FakeLLM("[]")

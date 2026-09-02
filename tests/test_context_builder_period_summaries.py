@@ -59,6 +59,32 @@ class ContextBuilderPeriodSummaryTests(unittest.TestCase):
         self.assertIn("最近的月摘要", text)
         self.assertIn("需要具体过程时，请调用只读 recall_memory", text)
 
+    def test_latest_personality_snapshot_is_rendered_for_agent_only(self):
+        frame = PerceptionFrame(
+            perception_event=create_perception_event("user", "text", "当前问题"),
+            state_snapshot={"owner": "agent", "mood": 50, "energy": 100},
+        )
+        with patch("core.context_builder.list_summaries", return_value=[]), patch(
+            "core.context_builder.get_latest_personality_snapshot",
+            return_value={"trait_values": {"openness": 70.0}},
+        ):
+            result = build_agent_context(frame, persona_instance_id="persona-a")
+
+        self.assertIn("当前人格倾向（由长期经历派生）", result["injection_text"])
+        self.assertIn("开放性", result["injection_text"])
+
+    def test_missing_personality_snapshot_falls_back_silently(self):
+        frame = PerceptionFrame(
+            perception_event=create_perception_event("user", "text", "当前问题"),
+            state_snapshot={"owner": "agent", "mood": 50, "energy": 100},
+        )
+        with patch("core.context_builder.list_summaries", return_value=[]), patch(
+            "core.context_builder.get_latest_personality_snapshot", return_value=None,
+        ):
+            result = build_agent_context(frame, persona_instance_id="persona-a")
+
+        self.assertNotIn("当前人格倾向（由长期经历派生）", result["injection_text"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -14,7 +14,28 @@ from memory.experience_store import StoredExperienceSlice
 from memory.personality_traits import list_all_traits
 
 
-PROMPT_VERSION = "personality-reflection-prompt-v1"
+PROMPT_VERSION = "personality-reflection-prompt-v2"
+
+# LLM 经常把“增强/减弱”写成自然语言同义词。这里只接受少量明确等价的
+# 写法并转换成框架正式值；未知写法仍交给 validator 拒绝，避免猜测语义。
+_DIRECTION_ALIASES = {
+    "positive": "increase",
+    "negative": "decrease",
+    "strengthen": "increase",
+    "weaken": "decrease",
+    "up": "increase",
+    "down": "decrease",
+}
+_BEHAVIOR_SOURCE_ALIASES = {
+    "autonomous": "autonomous_choice",
+    "自主": "autonomous_choice",
+    "自发": "autonomous_choice",
+    "requested": "user_requested",
+    "explicit_request": "user_requested",
+    "用户要求": "user_requested",
+    "uncertain": "uncertain",
+    "unknown": "unknown",
+}
 
 
 def _response_text(response: Any) -> str:
@@ -76,11 +97,13 @@ def build_reflection_prompt(
 严格要求：
 1. 只输出 JSON 数组；没有足够证据时输出 []。
 2. 每个候选必须引用实际存在的 slice_id，不能编造 ID。
-3. 至少引用 3 条相互独立的经历，不能依据单轮回复判断人格。
+3. 至少引用 3 条相互独立的经历，且正面证据至少跨越 3 天；不能依据单轮回复或同一天的重复消息判断人格。
 4. 用户明确要求后 Agent 直接执行，不算自主行为；不确定时写入 uncertainty。
 5. 必须区分正面证据和反面证据；不能把同一 slice 同时放入两边。
 6. 只能输出 trait_id、direction、strength、scope、behavior_source、
    evidence_slice_ids、counter_evidence_slice_ids、confidence、uncertainty。
+   direction 只能是 increase 或 decrease；behavior_source 优先使用
+   autonomous_choice、user_requested、uncertain、unknown 之一。
 7. 禁止输出最终人格分数、人格已经改变、关系结论或情绪结论。
 
 特质定义：
@@ -105,4 +128,14 @@ def generate_trait_candidates(
         return []
     response = llm.invoke(build_reflection_prompt(items, current_snapshot=current_snapshot))
     candidates = _parse_candidates(_response_text(response))
-    return candidates
+    normalized = []
+    for item in candidates:
+        candidate = dict(item)
+        direction = str(candidate.get("direction") or "").strip().lower()
+        behavior_source = str(candidate.get("behavior_source") or "").strip()
+        candidate["direction"] = _DIRECTION_ALIASES.get(direction, direction)
+        candidate["behavior_source"] = _BEHAVIOR_SOURCE_ALIASES.get(
+            behavior_source.lower(), behavior_source
+        )
+        normalized.append(candidate)
+    return normalized

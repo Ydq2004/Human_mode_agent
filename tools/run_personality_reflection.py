@@ -52,6 +52,13 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="运行一轮人格反思检查")
     parser.add_argument("--thread-id", default=DEFAULT_THREAD_ID)
     parser.add_argument("--persona-instance-id", default=None)
+    parser.add_argument(
+        "--reprocess",
+        action="store_true",
+        help="人工补测：忽略该线程已有反思水位，重新分析历史经历",
+    )
+    parser.add_argument("--min-new-slices", type=int, default=None)
+    parser.add_argument("--min-interval-days", type=float, default=None)
     args = parser.parse_args()
 
     try:
@@ -62,6 +69,9 @@ def main() -> int:
             persona_instance_id=instance_id,
             thread_id=args.thread_id,
             llm=_build_reflection_llm(),
+            reprocess=args.reprocess,
+            **({"min_new_slices": args.min_new_slices} if args.min_new_slices is not None else {}),
+            **({"min_interval_days": args.min_interval_days} if args.min_interval_days is not None else {}),
         )
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0 if result.get("status") in {"completed", "skipped"} else 1
@@ -72,4 +82,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

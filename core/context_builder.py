@@ -17,6 +17,8 @@ from memory.retrieval_engine import (
     retrieve_memories,
 )
 from memory.experience_summary_store import list_summaries
+from memory.personality_store import get_latest_personality_snapshot
+from memory.personality_calculator import render_personality_description
 from config import RECENT_PERIOD_SUMMARY_MAX_CHARS
 
 
@@ -65,6 +67,27 @@ def _build_recent_period_summary_context() -> str:
         lines.append("当前没有可用的日、周或月摘要。")
     return "\n".join(lines) + "\n\n"
 
+
+def _build_current_personality_context(persona_instance_id: str | None) -> str:
+    """把最新人格快照渲染成简短背景；读取失败时完全回退到角色卡人格。"""
+    instance_id = str(persona_instance_id or "").strip()
+    if not instance_id:
+        return ""
+    try:
+        snapshot = get_latest_personality_snapshot(instance_id)
+    except Exception:
+        snapshot = None
+    if not snapshot:
+        return ""
+    description = render_personality_description(snapshot.get("trait_values") or {})
+    if not description:
+        return ""
+    return (
+        "【当前人格倾向（由长期经历派生）】\n"
+        "以下内容只用于调节默认反应方式，不覆盖事实、能力、安全和副作用边界。\n"
+        f"{description}\n\n"
+    )
+
 def _merge_retrieval_results(
     results: list[RetrievalResult],
     top_k: int,
@@ -88,6 +111,7 @@ def _merge_retrieval_results(
                     entity=item.entity,
                     retrieval_sources=list(item.retrieval_sources),
                     vector_distance=item.vector_distance,
+                    relation_score=item.relation_score,
                 )
                 continue
 
@@ -100,6 +124,10 @@ def _merge_retrieval_results(
                 or item.vector_distance < existing.vector_distance
             ):
                 existing.vector_distance = item.vector_distance
+            existing.relation_score = max(
+                existing.relation_score,
+                item.relation_score,
+            )
 
         debug_candidates.extend(result.debug_vector_candidates)
 
@@ -117,6 +145,8 @@ def _merge_retrieval_results(
 
         return (
             1 if has_direct_source else 0,
+            sum(not source.startswith("related_") for source in item.retrieval_sources),
+            item.relation_score if not has_direct_source else 0.0,
             len(item.retrieval_sources),
             vector_score,
             item.entity.mention_count,
@@ -287,7 +317,8 @@ def _format_activation_context(
 def build_agent_context(
     perception_frame: PerceptionFrame,
     understanding_llm=None,
-    retry_understanding_llm=None
+    retry_understanding_llm=None,
+    persona_instance_id: str | None = None,
 ) -> dict:
     """
     Step 5 感知驱动上下文构建。
@@ -433,6 +464,7 @@ def build_agent_context(
     )
 
     recent_period_summary_text = _build_recent_period_summary_context()
+    current_personality_text = _build_current_personality_context(persona_instance_id)
 
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -448,6 +480,7 @@ def build_agent_context(
         f"{activation_state_text}"
         f"{memory_context_text}"
         f"{recent_period_summary_text}"
+        f"{current_personality_text}"
         f"{knowledge_scope_text}"
     )
 

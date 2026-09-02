@@ -38,6 +38,8 @@ DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
 
 # ========== Embedding 与记忆检索 ==========
 EMBEDDING_MODEL_NAME = "BAAI/bge-small-zh-v1.5"
+# 嵌入模型必须使用本机已经缓存的权重；启动时不向 Hugging Face 请求联网。
+EMBEDDING_LOCAL_FILES_ONLY = True
 RETRIEVAL_K = 5
 
 # 主 Agent 单轮主动回忆最多调用次数。

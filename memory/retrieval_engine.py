@@ -39,6 +39,8 @@ class RetrievedMemory:
     entity: MemoryEntity
     retrieval_sources: list[str] = field(default_factory=list)
     vector_distance: float | None = None
+    # 一跳关系的综合可信度；直接召回结果保持 0，不让关系分数压过直接命中。
+    relation_score: float = 0.0
 
 @dataclass
 class VectorCandidateDebug:
@@ -149,6 +151,7 @@ def _add_candidate(
     candidates: dict[str, RetrievedMemory],
     entity: MemoryEntity,
     source: str,
+    relation_score: float | None = None,
 ) -> None:
     """
     把一个实体加入候选集合，并记录它是通过什么路径命中的。
@@ -164,11 +167,17 @@ def _add_candidate(
         candidates[entity.concept_id] = RetrievedMemory(
             entity=entity,
             retrieval_sources=[source],
+            relation_score=max(0.0, min(1.0, float(relation_score or 0.0))),
         )
         return
 
     if source not in existing.retrieval_sources:
         existing.retrieval_sources.append(source)
+    if relation_score is not None:
+        existing.relation_score = max(
+            existing.relation_score,
+            max(0.0, min(1.0, float(relation_score))),
+        )
 
 
 def _matches_filter_subject(entity: MemoryEntity, subject: str) -> bool:
@@ -358,7 +367,12 @@ def _expand_related_candidates(
             if entity is None:
                 continue
 
-            _add_candidate(candidates, entity, source)
+            # weight 表示关系强度，confidence 表示关系来源可信度；两者相乘
+            # 才是这一跳关系的综合分。它只参与邻居之间的排序，不会越过直接命中。
+            relation_score = max(0.0, min(1.0, float(relation.weight))) * max(
+                0.0, min(1.0, float(relation.confidence))
+            )
+            _add_candidate(candidates, entity, source, relation_score=relation_score)
 
 
 def _direct_sources(item: RetrievedMemory) -> list[str]:
@@ -485,6 +499,10 @@ def retrieve_memories(
         key=lambda item: (
             # 直接命中的认知必须优先于仅通过一跳关系带回的邻居。
             1 if _direct_sources(item) else 0,
+            # 对直接结果，只计算直接召回路径的数量。
+            len(_direct_sources(item)),
+            # 关系邻居之间优先保留更强、更可信的边。
+            item.relation_score if not _direct_sources(item) else 0.0,
             # 多条独立路径同时命中，优先级最高。
             len(item.retrieval_sources),
 

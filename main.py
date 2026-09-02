@@ -183,7 +183,6 @@ def _build_persona_context(persona: dict) -> dict:
         for key in keys
         if persona.get(key)
     }
-
     expression_preferences = persona.get(
         "expression_preferences"
     )
@@ -441,6 +440,11 @@ def process_perception_event(
         perception_frame=frame,
         understanding_llm=understanding_llm,
         retry_understanding_llm=retry_understanding_llm,
+        persona_instance_id=str(
+            persona.get("persona_instance_id")
+            or persona.get("agent_name")
+            or ""
+        ).strip(),
     )
 
     # 动态上下文通过 Agent middleware 注入。

@@ -30,6 +30,7 @@ class PersonalityReflectionLLMTests(unittest.TestCase):
         result = generate_trait_candidates(llm, [_stored("exp-1"), _stored("exp-2"), _stored("exp-3")])
         self.assertEqual(result[0]["trait_id"], "openness")
         self.assertIn("只输出 JSON 数组", llm.prompt)
+        self.assertIn("至少跨越 3 天", llm.prompt)
 
     def test_invalid_top_level_response_is_rejected(self):
         class FakeLLM:
@@ -38,6 +39,20 @@ class PersonalityReflectionLLMTests(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             generate_trait_candidates(FakeLLM(), [_stored("exp-1")])
+
+    def test_clear_enum_aliases_are_normalized(self):
+        class FakeLLM:
+            def invoke(self, prompt):
+                return type("Response", (), {"content": (
+                    '[{"trait_id":"openness","direction":"positive",'
+                    '"strength":0.2,"scope":"general",'
+                    '"behavior_source":"autonomous","evidence_slice_ids":[],'
+                    '"counter_evidence_slice_ids":[],"confidence":0.7,"uncertainty":""}]'
+                )})()
+
+        result = generate_trait_candidates(FakeLLM(), [_stored("exp-1")])
+        self.assertEqual(result[0]["direction"], "increase")
+        self.assertEqual(result[0]["behavior_source"], "autonomous_choice")
 
 
 if __name__ == "__main__":

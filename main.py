@@ -57,6 +57,8 @@ from memory.recall_tools import recall_call_budget, recall_memory
 from memory.summary_scheduler import generate_missing_period_summaries
 from memory import commit_store
 from memory.personality_store import ensure_personality_seed_from_persona
+from tools.file_tools import read_file, list_directory, write_file, apply_patch
+from tools.file_access_policy import load_policy
 
 
 _DEBUG_SEPARATOR = "-" * 72
@@ -153,7 +155,7 @@ def _compact_experience_debug(experience_slice) -> dict:
         ),
         "observation_count": len(observations),
         "tool_result_count": sum(
-            observation.modality == "memory_recall_result"
+            observation.source == "tool"
             for observation in observations
         ),
     }
@@ -217,7 +219,7 @@ def _build_capability_snapshot(tools: list | None) -> dict:
 
         tool_names.append(str(tool_name))
 
-    return {
+    snapshot = {
         "owner": "agent",
         "registered_tools": tool_names,
 
@@ -244,6 +246,26 @@ def _build_capability_snapshot(tools: list | None) -> dict:
             },
         },
     }
+    file_tool_names = {"read_file", "list_directory", "write_file", "apply_patch"}
+    if file_tool_names.intersection(tool_names):
+        try:
+            policy = load_policy()
+            snapshot["file_access"] = {
+                "read_available": bool(policy["read_roots"]),
+                "write_available": bool(policy["write_roots"]),
+                "write_outside_whitelist": "confirmation_required",
+                "sensitive_files": "denied",
+                "max_read_bytes": policy["max_read_bytes"],
+                "max_write_bytes": policy["max_write_bytes"],
+            }
+        except Exception as exc:
+            snapshot["file_access"] = {
+                "read_available": False,
+                "write_available": False,
+                "status": "configuration_error",
+                "reason": str(exc),
+            }
+    return snapshot
 
 
 def _extract_tool_interactions(messages: list) -> tuple[list, list[PerceptionEvent]]:
@@ -284,13 +306,19 @@ def _extract_tool_interactions(messages: list) -> tuple[list, list[PerceptionEve
             rendered = json.dumps(content, ensure_ascii=False, default=str)
         if not rendered:
             rendered = "工具返回空结果"
+        tool_name = str(getattr(message, "name", "") or "")
+        modality = (
+            "memory_recall_result"
+            if tool_name == "recall_memory"
+            else "tool_result"
+        )
         observations.append(
             create_perception_event(
                 source="tool",
-                modality="memory_recall_result",
+                modality=modality,
                 content=rendered,
                 metadata={
-                    "tool_name": str(getattr(message, "name", "") or ""),
+                    "tool_name": tool_name,
                     "tool_call_id": str(
                         getattr(message, "tool_call_id", "") or ""
                     ),
@@ -939,9 +967,9 @@ def main():
     except Exception as exc:
         print(f"情景摘要检查失败（不影响聊天）：{exc}")
 
-    # 只注册只读回忆工具。长期认知的创建、更新和删除仍只能由 Step 6
-    # 的后台提交链执行，Agent 不能通过工具绕过身份裁决直接写库。
-    tools = [recall_memory]
+    # 注册回忆工具和受控文件工具。长期认知的创建、更新和删除仍只能由
+    # Step 6 后台提交链执行；文件副作用则由 file_access_policy 强制限制。
+    tools = [recall_memory, read_file, list_directory, write_file, apply_patch]
     capability_snapshot = _build_capability_snapshot(tools)
 
     (

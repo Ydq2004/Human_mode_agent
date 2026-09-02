@@ -15,6 +15,8 @@ PERSONA_CONFIG_PATH = PROJECT_ROOT / "Card_slot" / "persona_config.json"
 CHROMA_PERSIST_DIR = str(PROJECT_ROOT / "Card_slot" / "memory_db" / "chroma_db")
 SQLITE_DB_PATH = str(PROJECT_ROOT / "Card_slot" / "memory_db" / "sql_db.db")
 CHECKPOINT_DB_PATH = str(PROJECT_ROOT / "Card_slot" / "memory_db" / "checkpoint.db")
+# 文件工具权限是当前实例的运行配置，不放进角色卡。
+FILE_ACCESS_POLICY_PATH = PROJECT_ROOT / "Card_slot" / "file_access_policy.json"
 
 
 # ========== LLM 默认值与网络容错 ==========

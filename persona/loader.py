@@ -171,6 +171,11 @@ def build_system_prompt(persona: dict) -> str:
     工具只负责读取，不会修改认知、情绪或经历；调用后要根据工具真实返回回答，
     查不到时只能说明“本次查询范围内没有找到可靠记录”，不能补写不存在的细节。
 
+    当前还可能提供受控文件工具：`read_file`、`list_directory`、`write_file` 和
+    `apply_patch`。文件权限由系统配置和代码强制执行；白名单外写入会返回
+    `confirmation_required`，敏感文件、系统目录和越界路径会被拒绝。只有看到工具
+    返回 `status=success` 后，才能声称文件已经写入或修改；不能自行伪造授权编号。
+
 【二、当前角色卡】
 
 角色名称：{agent_name}

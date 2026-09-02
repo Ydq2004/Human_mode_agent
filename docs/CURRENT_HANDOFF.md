@@ -490,3 +490,16 @@ ExperienceSlice 完整记录：
   `experience_summary_attempts`，不会影响其他周期继续处理。
 - LLM 摘要只读取原始 `ExperienceSlice`，输出摘要文本和不确定性；来源切片、时间范围和摘要 id 由代码掌握，不能写回认知或人格状态。
 - `attempt_count` 统计每一次实际生成尝试，包括成功和失败；它不是只记录失败次数。
+
+## 文件工具（第一版已完成）
+
+文件工具已作为框架层能力接入主 Agent，详细说明见 `docs/FILE_TOOLS.md`。
+实例权限配置位于 `Card_slot/file_access_policy.json`，读取和写入白名单分离；
+路径解析、符号链接、敏感文件、系统目录和大小限制由代码执行。当前工具包括
+`read_file`、`list_directory`、`write_file`、`apply_patch`。白名单内写入使用
+原子替换，白名单外写入返回 `confirmation_required` 而不执行，尚未接入 CLI
+交互授权闭环。
+
+工具调用继续进入现有 `AgentAction -> PerceptionEvent -> ExperienceSlice` 链路，
+文件结果使用通用 `tool_result` 类型，回忆工具保留 `memory_recall_result`。
+文件内容不会自动进入长期认知。定向测试位于 `tests/test_file_tools.py`。

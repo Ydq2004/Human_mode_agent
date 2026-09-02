@@ -1,0 +1,16 @@
+{
+  "read_roots": ["."],
+  "write_roots": ["docs", "tests"],
+  "sensitive_patterns": [
+    ".env",
+    ".env.*",
+    "*.pem",
+    "*.key",
+    "*.p12",
+    "id_rsa*",
+    "credentials*",
+    "secrets*"
+  ],
+  "max_read_bytes": 1048576,
+  "max_write_bytes": 1048576
+}

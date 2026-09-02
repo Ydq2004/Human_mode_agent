@@ -35,6 +35,7 @@ from config import (
 )
 from core.working_context import WorkingContextMiddleware
 from persona.loader import load_persona, get_model_config, build_system_prompt
+from tools.file_authorization import make_file_authorization_middleware
 
 _RUNTIME_INJECTION = {"text": ""}
 
@@ -73,12 +74,13 @@ def render_event_times(request, handler):
     return handler(model_request)
 
 
-def create_agent_from_persona(tools: list = None):
+def create_agent_from_persona(tools: list = None, file_confirm=None):
       """
       读取角色卡 → 初始化 LLM → 组装 Agent。
 
       参数:
           tools: 工具列表。外部传入，方便在注册工具后再创建 Agent。
+          file_confirm: 白名单外文件写入的外层确认回调；不传则不启用交互确认。
 
       返回:
           (agent, config, persona, system_prompt,
@@ -187,21 +189,25 @@ def create_agent_from_persona(tools: list = None):
       system_prompt = build_system_prompt(persona)
 
       # 创建 Agent
+      middleware = [
+          make_dynamic_prompt(system_prompt),
+          WorkingContextMiddleware(
+              summary_llm=working_context_llm,
+              trigger_messages=WORKING_CONTEXT_TRIGGER_MESSAGES,
+              keep_messages=WORKING_CONTEXT_KEEP_MESSAGES,
+              max_summary_chars=WORKING_CONTEXT_MAX_SUMMARY_CHARS,
+          ),
+          render_event_times,
+      ]
+      if file_confirm is not None:
+          middleware.append(make_file_authorization_middleware(file_confirm))
+
       agent = create_agent(
           model=llm,
           tools=tools,
           system_prompt=system_prompt,
           checkpointer=checkpointer,
-          middleware=[
-              make_dynamic_prompt(system_prompt),
-              WorkingContextMiddleware(
-                  summary_llm=working_context_llm,
-                  trigger_messages=WORKING_CONTEXT_TRIGGER_MESSAGES,
-                  keep_messages=WORKING_CONTEXT_KEEP_MESSAGES,
-                  max_summary_chars=WORKING_CONTEXT_MAX_SUMMARY_CHARS,
-              ),
-               render_event_times,
-          ],
+          middleware=middleware,
       )
       config={
           "configurable": {"thread_id": "default_user"}

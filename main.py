@@ -268,6 +268,17 @@ def _build_capability_snapshot(tools: list | None) -> dict:
     return snapshot
 
 
+def _confirm_file_operation(request: dict) -> bool:
+    """CLI 层的文件写入确认；授权决定权不交给模型。"""
+    operation = request.get("operation", "write")
+    path = request.get("requested_path", "")
+    reason = request.get("reason", "路径不在文件写入白名单内")
+    print(f"\n文件工具请求用户确认：{operation} -> {path}")
+    print(f"原因：{reason}")
+    answer = input("允许这一次操作吗？(y/N)：").strip().lower()
+    return answer in {"y", "yes", "是", "确认"}
+
+
 def _extract_tool_interactions(messages: list) -> tuple[list, list[PerceptionEvent]]:
     """把本轮 Agent 的工具调用和工具结果转成可追溯经历记录。
 
@@ -980,7 +991,10 @@ def main():
         understanding_llm,
         retry_understanding_llm,
         appraisal_llm,
-    ) = create_agent_from_persona(tools=tools)
+    ) = create_agent_from_persona(
+        tools=tools,
+        file_confirm=_confirm_file_operation,
+    )
 
     # 角色卡只在实例首次启动时复制为出生人格；后续修改角色卡不会覆盖 seed。
     # 当前只建立人格演化的输入，不把人格快照注入主 Agent。

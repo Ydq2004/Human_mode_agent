@@ -497,9 +497,15 @@ ExperienceSlice 完整记录：
 实例权限配置位于 `Card_slot/file_access_policy.json`，读取和写入白名单分离；
 路径解析、符号链接、敏感文件、系统目录和大小限制由代码执行。当前工具包括
 `read_file`、`list_directory`、`write_file`、`apply_patch`。白名单内写入使用
-原子替换，白名单外写入返回 `confirmation_required` 而不执行，尚未接入 CLI
-交互授权闭环。
+原子替换。白名单外写入由 CLI 中间层询问用户；拒绝返回
+`confirmation_required`，确认后只执行当前一次“操作 + 路径”，令牌在工具进入
+执行阶段后失效。系统目录和敏感文件不能通过授权绕过。
 
 工具调用继续进入现有 `AgentAction -> PerceptionEvent -> ExperienceSlice` 链路，
 文件结果使用通用 `tool_result` 类型，回忆工具保留 `memory_recall_result`。
-文件内容不会自动进入长期认知。定向测试位于 `tests/test_file_tools.py`。
+文件内容不会自动进入长期认知。定向测试位于 `tests/test_file_tools.py`；
+二进制文件、读取大小限制和目录截断已有测试；符号链接测试在当前环境因无法
+创建链接而跳过，需要在真实 Windows 权限环境再验收。主循环真实对话仍需手动观察。
+长期真实环境还要继续留意权限配置变化、授权令牌的一次性和重启行为、并发调用、
+外部替换文件、磁盘空间不足，以及 Agent 是否始终依据真实 `status=success` 判断
+文件副作用。一次测试通过不代表这些长期运行场景已经完成验收。

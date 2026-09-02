@@ -132,9 +132,9 @@ def check_path(path: str, operation: str, *, policy_path: str | Path | None = No
         return PathCheckResult("allow", operation, requested, str(resolved))
 
     operation_id = f"fileop_{secrets.token_urlsafe(12)}"
-    _PENDING_OPERATIONS[operation_id] = (operation, _normalized(resolved))
     if authorization_id and _AUTHORIZATIONS.get(authorization_id) == (operation, _normalized(resolved)):
         return PathCheckResult("allow", operation, requested, str(resolved), "用户授权通过", operation_id)
+    _PENDING_OPERATIONS[operation_id] = (operation, _normalized(resolved))
     return PathCheckResult(
         "confirmation_required" if operation in {"write", "patch"} else "denied",
         operation,

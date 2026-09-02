@@ -73,9 +73,11 @@ def list_directory(path: str, recursive: bool = False, limit: int = 100) -> str:
         if not target.is_dir():
             return _result("list", "error", path, reason="目标不是目录")
         entries = []
+        truncated = False
         iterator = target.rglob("*") if recursive else target.iterdir()
         for item in iterator:
             if len(entries) >= limit:
+                truncated = True
                 break
             # 敏感文件由 read/list 的统一策略拒绝，不在目录结果中泄露。
             check = check_path(str(item), "read")
@@ -87,7 +89,7 @@ def list_directory(path: str, recursive: bool = False, limit: int = 100) -> str:
             })
     except OSError as exc:
         return _result("list", "error", path, reason=str(exc))
-    return _result("list", "success", path, entries=entries, truncated=len(entries) >= limit)
+    return _result("list", "success", path, entries=entries, truncated=truncated)
 
 
 def _atomic_write(target: Path, content: str) -> None:

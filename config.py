@@ -226,6 +226,15 @@ WORKING_CONTEXT_LLM_TIMEOUT_SECONDS = 70.0
 WORKING_CONTEXT_LLM_TEMPERATURE = 0.1
 WORKING_CONTEXT_LLM_MAX_TOKENS = 2048
 
+# ========== 模拟身体模块 ==========
+# 身体评价在主 Agent 回复前同步运行，因此使用独立的低温度和较短输出。
+# LLM 只输出变化方向/幅度与描述，绝对状态仍由代码计算和提交。
+SOMATIC_LLM_TIMEOUT_SECONDS = 60.0
+SOMATIC_LLM_TEMPERATURE = 0.1
+SOMATIC_LLM_MAX_TOKENS = 1024
+# 限制 Agent 单轮主动身体动作次数，防止工具循环反复改变状态。
+SOMATIC_MAX_CALLS_PER_TURN = 3
+
 # 启动时只自动恢复最近一段时间内、评价结果完整且仍等待提交的任务。
 # 太旧的任务不会被静默重放，需通过 recover_commit_ledger.py 人工处理。
 COMMIT_RECOVERY_MAX_AGE_HOURS = 24.0

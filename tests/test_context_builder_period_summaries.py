@@ -85,6 +85,32 @@ class ContextBuilderPeriodSummaryTests(unittest.TestCase):
 
         self.assertNotIn("当前人格倾向（由长期经历派生）", result["injection_text"])
 
+    def test_internal_somatic_values_are_not_rendered_for_agent(self):
+        frame = PerceptionFrame(
+            perception_event=create_perception_event("user", "text", "当前问题"),
+            state_snapshot={
+                "owner": "agent",
+                "mood": 50,
+                "energy": 100,
+                "somatic": {
+                    "values": {"arousal": 0.8, "sensitivity": 0.95},
+                    "revision": 13,
+                },
+            },
+        )
+        with patch("core.context_builder.list_summaries", return_value=[]), patch(
+            "core.context_builder.get_latest_personality_snapshot",
+            return_value=None,
+        ):
+            result = build_agent_context(frame)
+
+        text = result["injection_text"]
+        self.assertNotIn("当前身体状态", text)
+        self.assertNotIn("arousal", text)
+        self.assertNotIn("sensitivity", text)
+        self.assertNotIn("0.8", text)
+        self.assertNotIn("0.95", text)
+
 
 if __name__ == "__main__":
     unittest.main()

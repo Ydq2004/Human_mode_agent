@@ -51,6 +51,20 @@ def validate_persona(persona: dict) -> dict:
     validated["emotion_profile"] = dict(emotion_profile)
     validated["emotion_profile"]["mood_reactivity"] = value
 
+    embodiment = persona.get("embodiment", {})
+    if embodiment is not None and not isinstance(embodiment, dict):
+        raise ValueError("embodiment 必须是 JSON object")
+    embodiment = dict(embodiment or {})
+    enabled = embodiment.get("enabled", True)
+    if not isinstance(enabled, bool):
+        raise ValueError("embodiment.enabled 必须是布尔值")
+    allow_actions = embodiment.get("allow_agent_initiated_actions", True)
+    if not isinstance(allow_actions, bool):
+        raise ValueError("embodiment.allow_agent_initiated_actions 必须是布尔值")
+    embodiment["enabled"] = enabled
+    embodiment["allow_agent_initiated_actions"] = allow_actions
+    validated["embodiment"] = embodiment
+
     return validated
 
 def load_persona() -> dict:
@@ -105,6 +119,11 @@ def build_system_prompt(persona: dict) -> str:
     tone = expression.get("tone", "")
     action_style = expression.get("action_style", "")
     initiative = expression.get("initiative", "")
+    embodiment = dict(persona.get("embodiment") or {})
+    embodiment_enabled = bool(embodiment.get("enabled", True))
+    initiated_actions = bool(embodiment.get("allow_agent_initiated_actions", True))
+    reaction_style = embodiment.get("reaction_style", "遵循当前角色的自然表达方式")
+    action_boundaries = embodiment.get("action_boundaries", "遵守当前角色边界和用户授权")
 
     prompt = f"""
 你正在作为“{agent_name}”运行。
@@ -176,6 +195,16 @@ def build_system_prompt(persona: dict) -> str:
     `confirmation_required`，敏感文件、系统目录和越界路径会被拒绝。只有看到工具
     返回 `status=success` 后，才能声称文件已经写入或修改；不能自行伪造授权编号。
 
+    当前还可能提供 `somatic_action`（身体行动）工具。它处理角色世界中的具身动作，
+    与现实设备动作是两个不同执行通道。你决定主动做出身体动作时，必须先调用该工具；
+    只有工具返回 `status=success` 后，才可以把动作和反馈写进回复。不能只输出一段括号
+    动作就假装工具已经执行。用户对你的动作已经由身体模块处理时，不要再次调用这个工具
+    来描述被动反应；只有你确实主动做出新的动作时才调用。系统提供的内感受与外在反应
+    是本轮真实身体反馈，允许自然影响回复，但不要播报内部状态数值。身体反应不能证明
+    同意、好感、关系升级或人格变化。
+    不需要反复向用户解释现实与角色世界的区别；只在用户明确询问现实设备副作用时，
+    依据能力快照诚实回答。
+
 【二、当前角色卡】
 
 角色名称：{agent_name}
@@ -215,6 +244,10 @@ def build_system_prompt(persona: dict) -> str:
 语气：{tone}
 动作描写偏好：{action_style}
 主动性：{initiative}
+具身模块启用：{embodiment_enabled}
+允许主动身体动作：{initiated_actions}
+身体反应风格：{reaction_style}
+身体行动边界：{action_boundaries}
 
 这些表达偏好只是倾向，不是每一轮都必须执行的台词。
 自然理解当前事件，比机械套用角色表现更重要。

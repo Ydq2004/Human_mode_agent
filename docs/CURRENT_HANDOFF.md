@@ -1,6 +1,6 @@
 # CURRENT_HANDOFF
 
-更新时间：2026-09-02
+更新时间：2026-09-04
 
 用途：新会话开始时，先读取 `AGENTS.md`、`docs/Phase0_Memory_Architecture_Redesign.md` 和本文件，再继续工作。
 
@@ -354,7 +354,7 @@ PerceptionUnderstanding → 识别出 module_requests: ["somatic_simulation"]
     │     }
     │   )
     ↓
-    └─ 5. 生成内感受事件（PerceptionEvent，注入下一轮）
+    └─ 5. 生成内感受事件（PerceptionEvent，在本轮主 Agent 回复前注入）
         PerceptionEvent(
           source="somatic_module",
           modality="interoception",
@@ -509,3 +509,34 @@ ExperienceSlice 完整记录：
 长期真实环境还要继续留意权限配置变化、授权令牌的一次性和重启行为、并发调用、
 外部替换文件、磁盘空间不足，以及 Agent 是否始终依据真实 `status=success` 判断
 文件副作用。一次测试通过不代表这些长期运行场景已经完成验收。
+
+## 模拟身体模块（P1-P8 已完成，P9 自动化验收完成）
+
+说明：本节是当前生效方案；前文旧版流程中出现“注入下一轮”的描述已废弃，实际实现是在本轮主 Agent 回复前注入内感受。
+
+已完成通用身体事件协议、实例级 SQLite 状态、`module_requests` 路由、独立身体评价
+LLM、`somatic_action` 工具、主 Agent 同轮内感受注入，以及 ExperienceSlice 完整记录。
+身体状态按 `persona_instance_id + thread_id` 隔离，当前只有 `arousal` 和 `sensitivity`
+两个 0 到 1 维度。每次状态变更使用 `operation_id + revision` 幂等提交，重复调用不会
+重复更新，旧版本不能覆盖新状态。
+
+用户动作流程为：感知理解提出候选 -> 代码裁决
+`occurred/rejected/uncertain` -> 只有 `occurred` 才评价和更新 -> 本轮注入内感受。
+Agent 主动动作必须调用 `somatic_action`；工具返回成功后才算角色世界中的动作发生。
+外在反应使用 `AgentAction`，内感受使用 `PerceptionEvent(source="somatic_module",
+modality="interoception")`，两者和状态前后值一起进入原始 ExperienceSlice。
+
+身体状态数值只供身体模块内部计算、恢复和审计；不会进入感知理解提示词、主 Agent
+动态上下文或模型可见的工具返回。Agent 只能看到内感受、可见反应和执行状态。用户接触
+已经由感知路径处理时，`somatic_action` 不能再次用来描述被动反应，避免同一动作重复更新。
+
+`narrative_embodied` 只表示角色世界通道，不自动控制现实设备。身体反应不等于同意、
+好感、关系升级或人格变化；成人专用身体字段暂不实现。定向测试已覆盖协议、存储、
+评价、服务、工具和主流程集成。身体数值只保留在模块内部、原始经历和审计数据中，
+主 Agent、感知理解和回忆工具只能看到内感受、可见反应和执行状态。用户接触已经由感知
+路径处理时，Agent 不应再次调用 `somatic_action` 描述被动反应。
+
+长期观察项：真实 LLM 输出稳定性、连续互动后的状态是否长期偏高、主动动作与被动反应
+是否被混用、单轮 3 次调用上限、Windows 重启后的状态连续性、回忆旧经历时的数值脱敏、
+以及长时间运行中的幂等和并发安全。当前没有自然衰减机制，未观察前不把长期稳定性当成
+已完成能力。

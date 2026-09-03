@@ -32,6 +32,9 @@ from config import (
     WORKING_CONTEXT_LLM_TIMEOUT_SECONDS,
     WORKING_CONTEXT_LLM_TEMPERATURE,
     WORKING_CONTEXT_LLM_MAX_TOKENS,
+    SOMATIC_LLM_TIMEOUT_SECONDS,
+    SOMATIC_LLM_TEMPERATURE,
+    SOMATIC_LLM_MAX_TOKENS,
 )
 from core.working_context import WorkingContextMiddleware
 from persona.loader import load_persona, get_model_config, build_system_prompt
@@ -84,7 +87,8 @@ def create_agent_from_persona(tools: list = None, file_confirm=None):
 
       返回:
           (agent, config, persona, system_prompt,
-           understanding_llm, retry_understanding_llm, appraisal_llm)
+           understanding_llm, retry_understanding_llm, appraisal_llm,
+           somatic_llm)
       """
       if tools is None:
           tools = []
@@ -177,6 +181,18 @@ def create_agent_from_persona(tools: list = None, file_confirm=None):
           max_retries=LLM_MAX_RETRIES,
       )
 
+      # 7. 身体评价 LLM。它只解释已确认的身体事件，不参与事件裁决，
+      # 也不能直接决定身体状态绝对值、同意、关系或人格。
+      somatic_llm = ChatOpenAI(
+          model=model_name,
+          api_key=api_key,
+          base_url=base_url,
+          temperature=SOMATIC_LLM_TEMPERATURE,
+          max_tokens=SOMATIC_LLM_MAX_TOKENS,
+          timeout=SOMATIC_LLM_TIMEOUT_SECONDS,
+          max_retries=LLM_MAX_RETRIES,
+      )
+
       
 
       # 对话持久化
@@ -220,5 +236,5 @@ def create_agent_from_persona(tools: list = None, file_confirm=None):
           understanding_llm,
           retry_understanding_llm,
           appraisal_llm,
-          
+          somatic_llm,
       )

@@ -118,6 +118,57 @@ def _entity_to_dict(entity: Any) -> dict[str, Any]:
     }
 
 
+_SOMATIC_INTERNAL_KEYS = frozenset({
+    "state_before",
+    "state_after",
+    "body_state",
+    "body_state_snapshot",
+})
+
+
+def _redact_somatic_internal(value: Any) -> Any:
+    """删除回忆结果中身体模块的内部状态，但不改原始数据库记录。"""
+    if isinstance(value, dict):
+        return {
+            key: _redact_somatic_internal(item)
+            for key, item in value.items()
+            if key not in _SOMATIC_INTERNAL_KEYS
+        }
+    if isinstance(value, list):
+        return [_redact_somatic_internal(item) for item in value]
+    return value
+
+
+def _redact_tool_content(content: str) -> str:
+    """兼容旧经历中已经把身体状态写进 tool_result 正文的情况。"""
+    try:
+        parsed = json.loads(content)
+    except (TypeError, json.JSONDecodeError):
+        return content
+    if not isinstance(parsed, (dict, list)):
+        return content
+    return json.dumps(
+        _redact_somatic_internal(parsed),
+        ensure_ascii=False,
+    )
+
+
+def _public_action(action: Any) -> dict[str, Any]:
+    result = action.to_dict()
+    result["metadata"] = _redact_somatic_internal(result.get("metadata") or {})
+    if result.get("action_type") == "tool_call":
+        result["content"] = _redact_tool_content(result.get("content", ""))
+    return result
+
+
+def _public_observation(observation: Any) -> dict[str, Any]:
+    result = observation.to_dict()
+    result["metadata"] = _redact_somatic_internal(result.get("metadata") or {})
+    if result.get("modality") == "tool_result":
+        result["content"] = _redact_tool_content(result.get("content", ""))
+    return result
+
+
 def _slice_to_dict(stored: Any) -> dict[str, Any]:
     experience = stored.experience
     event = experience.perception_event
@@ -131,10 +182,11 @@ def _slice_to_dict(stored: Any) -> dict[str, Any]:
         "modality": event.modality,
         "content": event.content,
         "response_or_actions": [
-            action.to_dict() for action in experience.response_or_actions
+            _public_action(action) for action in experience.response_or_actions
         ],
         "observations": [
-            observation.to_dict() for observation in experience.observations
+            _public_observation(observation)
+            for observation in experience.observations
         ],
         "perception_understanding": dict(experience.perception_understanding),
         "activated_memory_refs": [

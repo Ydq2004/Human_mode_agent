@@ -32,6 +32,7 @@ class MainCliControlTests(unittest.TestCase):
             object(),
             object(),
             object(),
+            object(),
         )
 
         with patch.object(

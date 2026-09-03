@@ -9,6 +9,7 @@ CLI 只是输入适配器：
 
 import json
 from copy import deepcopy
+from contextlib import nullcontext
 from textwrap import indent
 from time import perf_counter
 
@@ -32,6 +33,7 @@ from core.vector_repair_worker import VectorRepairWorker
 from core.memory_commit import MemoryCommitService
 from core.context_builder import build_agent_context
 from core.experience import (
+    AgentAction,
     create_agent_action,
     create_experience_slice,
 )
@@ -57,8 +59,16 @@ from memory.recall_tools import recall_call_budget, recall_memory
 from memory.summary_scheduler import generate_missing_period_summaries
 from memory import commit_store
 from memory.personality_store import ensure_personality_seed_from_persona
+from memory.somatic_store import ensure_somatic_store, get_somatic_state
 from tools.file_tools import read_file, list_directory, write_file, apply_patch
 from tools.file_access_policy import load_policy
+from tools.somatic_tools import somatic_action, somatic_tool_context
+from core.somatic_service import SomaticOutcome, SomaticService, format_somatic_context
+from core.somatic_simulation import (
+    SomaticEventDecision,
+    create_somatic_interoception,
+    create_somatic_response,
+)
 
 
 _DEBUG_SEPARATOR = "-" * 72
@@ -178,6 +188,7 @@ def _build_persona_context(persona: dict) -> dict:
         "obedience_rule",
         "knowledge_boundary",
         "initiative",
+        "embodiment",
     )
 
     context = {
@@ -199,7 +210,7 @@ def _build_persona_context(persona: dict) -> dict:
 
     return context
 
-def _build_capability_snapshot(tools: list | None) -> dict:
+def _build_capability_snapshot(tools: list | None, persona: dict | None = None) -> dict:
     """
     创建当前 Agent 的能力快照。
 
@@ -223,8 +234,11 @@ def _build_capability_snapshot(tools: list | None) -> dict:
         "owner": "agent",
         "registered_tools": tool_names,
 
-        # 当前 Phase 0 没有真实身体或设备控制工具。
-        "physical_action": "没有真实的物理身体,如果需要请输出动作描写进行模拟,使用时需要把动作描写放进括号里比如:(抬头看向天空)",
+        # 角色世界中的具身行动与现实设备副作用是两个通道。
+        "embodied_action": {
+            "narrative_embodied": "somatic_action" in tool_names,
+            "external_physical": False,
+        },
         "device_control": False,
         "environment_observation": False,
         "long_term_memory_control": {
@@ -265,6 +279,16 @@ def _build_capability_snapshot(tools: list | None) -> dict:
                 "status": "configuration_error",
                 "reason": str(exc),
             }
+    if "somatic_action" in tool_names:
+        embodiment = dict((persona or {}).get("embodiment") or {})
+        snapshot["somatic_simulation"] = {
+            "enabled": bool(embodiment.get("enabled", True)),
+            "tool": "somatic_action",
+            "execution_channel": "narrative_embodied",
+            "state_dimensions": ["arousal", "sensitivity"],
+            "external_physical_effect": False,
+            "body_response_is_not_consent": True,
+        }
     return snapshot
 
 
@@ -279,17 +303,75 @@ def _confirm_file_operation(request: dict) -> bool:
     return answer in {"y", "yes", "是", "确认"}
 
 
-def _extract_tool_interactions(messages: list) -> tuple[list, list[PerceptionEvent]]:
+def _somatic_outcome_records(outcome: dict) -> tuple[list[AgentAction], list[PerceptionEvent]]:
+    """把身体工具的结构化结果复制进通用经历协议。"""
+    if not isinstance(outcome, dict) or outcome.get("status") != "completed":
+        return [], []
+    actions: list[AgentAction] = []
+    action_description = str(outcome.get("action_description") or "").strip()
+    if action_description:
+        actions.append(create_agent_action(
+            "somatic_action",
+            action_description,
+            metadata={
+                "operation_id": outcome.get("operation_id"),
+                "execution_channel": "narrative_embodied",
+                "state_before": outcome.get("state_before") or {},
+                "state_after": outcome.get("state_after") or {},
+            },
+        ))
+    visible = str(outcome.get("visible_reaction") or "").strip()
+    if visible:
+        actions.append(create_agent_action(
+            "somatic_response",
+            visible,
+            metadata={
+                "triggered_by": "somatic_module",
+                "operation_id": outcome.get("operation_id"),
+                "body_state_snapshot": outcome.get("state_after") or {},
+            },
+        ))
+    interoception = str(outcome.get("interoception_description") or "").strip()
+    observations = []
+    if interoception:
+        observations.append(create_perception_event(
+            source="somatic_module",
+            modality="interoception",
+            content=interoception,
+            metadata={
+                "operation_id": outcome.get("operation_id"),
+                "somatic_decision": outcome.get("decision") or {},
+                "body_state": outcome.get("state_after") or {},
+            },
+        ))
+    return actions, observations
+
+
+def _extract_tool_interactions(
+    messages: list,
+    *,
+    current_event_id: str | None = None,
+) -> tuple[list, list[PerceptionEvent]]:
     """把本轮 Agent 的工具调用和工具结果转成可追溯经历记录。
 
     LangChain 会把工具调用放在 AIMessage.tool_calls，把返回值放在
     ToolMessage.content。这里不改变模型消息，只为 ExperienceSlice 复制
     一份记录；工具结果仍然只是观察，不会自动变成长期认知。
     """
+    messages = list(messages or [])
+    if current_event_id:
+        for index in range(len(messages) - 1, -1, -1):
+            event_data = getattr(messages[index], "additional_kwargs", {}).get(
+                "perception_event"
+            )
+            if isinstance(event_data, dict) and event_data.get("event_id") == current_event_id:
+                messages = messages[index:]
+                break
+
     actions = []
     observations = []
 
-    for message in messages or []:
+    for message in messages:
         tool_calls = getattr(message, "tool_calls", None) or []
         for call in tool_calls:
             if not isinstance(call, dict):
@@ -336,6 +418,20 @@ def _extract_tool_interactions(messages: list) -> tuple[list, list[PerceptionEve
                 },
             )
         )
+        if tool_name == "somatic_action":
+            payload = getattr(message, "artifact", None)
+            if not isinstance(payload, dict):
+                try:
+                    payload = json.loads(rendered)
+                except (json.JSONDecodeError, TypeError):
+                    payload = {}
+            extra_actions, extra_observations = _somatic_outcome_records(
+                payload.get("outcome") or {}
+                if isinstance(payload, dict)
+                else {}
+            )
+            actions.extend(extra_actions)
+            observations.extend(extra_observations)
 
     return actions, observations
 
@@ -345,6 +441,7 @@ def _build_perception_frame(
     recent_context: list[str],
     persona: dict,
     capability_snapshot:dict|None=None,
+    somatic_service: SomaticService | None = None,
 ) -> PerceptionFrame:
     """
     在事件边界创建 PerceptionFrame。
@@ -368,6 +465,12 @@ def _build_perception_frame(
         "owner": "agent",
         **raw_state_snapshot,
     }
+    if somatic_service is not None:
+        somatic_state = somatic_service.current_state()
+        state_snapshot["somatic"] = {
+            "values": somatic_state.state.to_dict(),
+            "revision": somatic_state.revision,
+        }
 
     return PerceptionFrame(
         perception_event=event,
@@ -379,6 +482,73 @@ def _build_perception_frame(
         ),
         persona_context=_build_persona_context(persona),
     )
+
+
+def _process_somatic_module_requests(
+    *,
+    context_result: dict,
+    event: PerceptionEvent,
+    service: SomaticService | None,
+) -> list[SomaticOutcome]:
+    """处理感知层提出的身体候选；没有服务或理解失败时不猜测事件。"""
+    if service is None:
+        return []
+    understanding = context_result.get("perception_understanding")
+    if not isinstance(understanding, dict) or understanding.get("understanding_status") != "normal":
+        return []
+    outcomes = []
+    for index, item in enumerate(understanding.get("module_requests") or []):
+        if not isinstance(item, dict) or item.get("module") != "somatic":
+            continue
+        candidate = item.get("event_candidate")
+        if not isinstance(candidate, dict):
+            continue
+        outcomes.append(service.process(
+            candidate,
+            source_event_id=event.event_id,
+            operation_id=f"somatic_perception:{service.thread_id}:{event.event_id}:{index}",
+            source_kind="perceived_contact",
+            event_context={
+                "perception_event": event.to_dict(),
+                "derived_from": item.get("derived_from"),
+            },
+        ))
+    return outcomes
+
+
+def _records_from_somatic_outcomes(
+    outcomes: list[SomaticOutcome],
+    *,
+    triggered_by_event: str,
+) -> tuple[list[AgentAction], list[PerceptionEvent]]:
+    actions = []
+    observations = []
+    for outcome in outcomes:
+        if outcome.status == "completed":
+            actions.append(create_somatic_response(
+                outcome.visible_reaction,
+                outcome.state_after,
+                triggered_by_event=triggered_by_event,
+            ))
+            observations.append(create_somatic_interoception(
+                outcome.decision,
+                outcome.state_after,
+                outcome.interoception_description,
+                triggered_by_event=triggered_by_event,
+            ))
+            continue
+        observations.append(create_perception_event(
+            source="somatic_module",
+            modality="somatic_decision",
+            content=outcome.decision.reason or outcome.error or "身体事件没有改变状态。",
+            metadata={
+                "status": outcome.status,
+                "operation_id": outcome.operation_id,
+                "somatic_decision": outcome.decision.to_dict(),
+                "state_unchanged": True,
+            },
+        ))
+    return actions, observations
 
 
 
@@ -449,6 +619,7 @@ def process_perception_event(
     recent_context: list[str],
     capability_snapshot: dict | None = None,
     event_sequence: int | None = None,
+    somatic_service: SomaticService | None = None,
 ) -> dict:
     """
     处理一个感知事件，返回本轮上下文和 ExperienceSlice。
@@ -474,6 +645,7 @@ def process_perception_event(
         recent_context=recent_context,
         persona=persona,
         capability_snapshot=capability_snapshot,
+        somatic_service=somatic_service,
     )
     context_result = build_agent_context(
         perception_frame=frame,
@@ -485,6 +657,16 @@ def process_perception_event(
             or ""
         ).strip(),
     )
+
+    somatic_outcomes = _process_somatic_module_requests(
+        context_result=context_result,
+        event=event,
+        service=somatic_service,
+    )
+    somatic_context = format_somatic_context(somatic_outcomes)
+    if somatic_context:
+        context_result["injection_text"] += somatic_context
+    context_result["somatic_outcomes"] = [item.to_dict() for item in somatic_outcomes]
 
     # 动态上下文通过 Agent middleware 注入。
     # 用户/环境事件本身仍作为本轮真实消息传给 Agent。
@@ -501,7 +683,12 @@ def process_perception_event(
         model_message = perception_event_to_model_message(event)
         # 主 Agent 的主动回忆次数属于“单轮”运行状态，
         # 必须在本次 invoke 外层建立预算，不能使用跨轮累加的全局计数。
-        with recall_call_budget():
+        somatic_context_manager = (
+            somatic_tool_context(somatic_service, source_event_id=event.event_id)
+            if somatic_service is not None
+            else nullcontext()
+        )
+        with recall_call_budget(), somatic_context_manager:
             result = agent.invoke(
                 {"messages": [model_message]},
                 config=agent_config,
@@ -533,7 +720,12 @@ def process_perception_event(
     # 工具调用和返回值是本轮真实发生的运行记录，保存为行动/观察，
     # 这样以后能知道 Agent 是否查过某段经历，而不是只看它的文字。
     tool_actions, observations = _extract_tool_interactions(
-        result.get("messages", [])
+        result.get("messages", []),
+        current_event_id=event.event_id,
+    )
+    somatic_actions, somatic_observations = _records_from_somatic_outcomes(
+        somatic_outcomes,
+        triggered_by_event=event.event_id,
     )
 
     experience_slice = create_experience_slice(
@@ -546,8 +738,8 @@ def process_perception_event(
             context_result.get("activated_memory_refs")
             or []
         ),
-        response_or_actions=[visible_action, *tool_actions],
-        observations=observations,
+        response_or_actions=[*somatic_actions, visible_action, *tool_actions],
+        observations=[*somatic_observations, *observations],
         state_snapshot=frame.state_snapshot,
         capability_snapshot=frame.capability_snapshot,
         memory_activation_state=(
@@ -980,8 +1172,14 @@ def main():
 
     # 注册回忆工具和受控文件工具。长期认知的创建、更新和删除仍只能由
     # Step 6 后台提交链执行；文件副作用则由 file_access_policy 强制限制。
-    tools = [recall_memory, read_file, list_directory, write_file, apply_patch]
-    capability_snapshot = _build_capability_snapshot(tools)
+    tools = [
+        recall_memory,
+        read_file,
+        list_directory,
+        write_file,
+        apply_patch,
+        somatic_action,
+    ]
 
     (
         agent,
@@ -991,6 +1189,7 @@ def main():
         understanding_llm,
         retry_understanding_llm,
         appraisal_llm,
+        somatic_llm,
     ) = create_agent_from_persona(
         tools=tools,
         file_confirm=_confirm_file_operation,
@@ -998,9 +1197,25 @@ def main():
 
     # 角色卡只在实例首次启动时复制为出生人格；后续修改角色卡不会覆盖 seed。
     # 当前只建立人格演化的输入，不把人格快照注入主 Agent。
-    ensure_personality_seed_from_persona(persona)
+    personality_seed = ensure_personality_seed_from_persona(persona)
+    persona_instance_id = str(personality_seed["persona_instance_id"])
 
     thread_id = DEFAULT_THREAD_ID
+    ensure_somatic_store()
+    embodiment = dict(persona.get("embodiment") or {})
+    somatic_service = SomaticService(
+        persona_instance_id=persona_instance_id,
+        thread_id=thread_id,
+        llm=somatic_llm,
+        persona_context=_build_persona_context(persona),
+        enabled=bool(embodiment.get("enabled", True)),
+        allow_agent_initiated_actions=bool(
+            embodiment.get("allow_agent_initiated_actions", True)
+        ),
+    )
+    # 能力快照必须在 persona 和身体服务确定后创建，避免把角色世界行动
+    # 与现实设备行动混为一谈。
+    capability_snapshot = _build_capability_snapshot(tools, persona)
     # 事件序号属于该对话线程的长期经历顺序。启动时从 SQLite 继续取号，
     # 这样重启后不会把新事件重新编号为 1。
     next_event_sequence = get_next_event_sequence(thread_id)
@@ -1123,6 +1338,7 @@ def main():
                     recent_context=recent_context,
                     capability_snapshot=capability_snapshot,
                     event_sequence=event_sequence,
+                    somatic_service=somatic_service,
                 )
 
                 experience_slice = result["experience_slice"]

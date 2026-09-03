@@ -45,6 +45,66 @@ def _stored(event_id: str, content: str) -> StoredExperienceSlice:
 
 
 class RecallToolTests(unittest.TestCase):
+    def test_recall_hides_internal_somatic_state_from_experience_results(self):
+        event = create_perception_event(
+            source="user",
+            modality="text",
+            content="（轻轻碰了碰手）",
+            event_id="evt-somatic-recall",
+        )
+        experience = create_experience_slice(
+            perception_event=event,
+            perception_understanding={},
+            activated_memory_refs=[],
+            response_or_actions=[
+                create_agent_action(
+                    "somatic_response",
+                    "手指轻轻收紧",
+                    metadata={"body_state_snapshot": {"arousal": 0.8}},
+                ),
+            ],
+            observations=[
+                create_perception_event(
+                    source="somatic_module",
+                    modality="interoception",
+                    content="掌心传来温热触感",
+                    metadata={"body_state": {"sensitivity": 0.9}},
+                ),
+                create_perception_event(
+                    source="tool",
+                    modality="tool_result",
+                    content=json.dumps({
+                        "operation": "somatic_action",
+                        "outcome": {
+                            "state_before": {"arousal": 0.7},
+                            "state_after": {"arousal": 0.8},
+                            "interoception_description": "感到温热",
+                        },
+                    }, ensure_ascii=False),
+                ),
+            ],
+            state_snapshot={"somatic": {"values": {"arousal": 0.8}}},
+        )
+        stored = StoredExperienceSlice(
+            experience=experience,
+            thread_id="thread-a",
+            event_sequence=1,
+            stored_at="2026-08-24T10:00:01",
+            schema_version=1,
+        )
+
+        with patch.object(experience_store, "search_experience_slices", return_value=[stored]):
+            # 直接检查工具输出使用的同一层转换，避免写入真实数据库。
+            output = recall_tools._slice_to_dict(stored)
+
+        rendered = json.dumps(output, ensure_ascii=False)
+        self.assertIn("掌心传来温热触感", rendered)
+        self.assertNotIn("body_state", rendered)
+        self.assertNotIn("body_state_snapshot", rendered)
+        self.assertNotIn("state_before", rendered)
+        self.assertNotIn("state_after", rendered)
+        self.assertNotIn("0.8", rendered)
+
     def test_tool_reports_actual_data_coverage(self):
         with tempfile.TemporaryDirectory() as directory:
             db_path = str(Path(directory) / "coverage.db")

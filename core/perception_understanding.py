@@ -306,6 +306,7 @@ def _fallback_understanding(
         # 失败时不能猜测事件是否要求了某种副作用；能力真值仍由
         # capability_snapshot 单独提供给主 Agent。
         "capability_constraints": [],
+        "module_requests": [],
         "memory_activation_cues": [{
             "query": event.content,
             "filters": {},
@@ -322,6 +323,39 @@ def _clean_understanding(
     """清洗契约，不替模型补充语义判断。"""
     event = frame.perception_event
 
+    module_requests = []
+    raw_requests = raw.get("module_requests")
+    if isinstance(raw_requests, list):
+        for item in raw_requests[:3]:
+            if not isinstance(item, dict):
+                continue
+            if _clean_text(item.get("module")).lower() != "somatic":
+                continue
+            candidate = item.get("event_candidate")
+            if not isinstance(candidate, dict):
+                continue
+            # 清洗层只保留身体裁决真正使用的字段，不根据自由文本补事实。
+            allowed = {
+                "event_confirmed",
+                "contact_object",
+                "contact_area",
+                "intensity",
+                "duration",
+                "uncertainty",
+                "action_description",
+                "target",
+                "execution_channel",
+            }
+            module_requests.append({
+                "module": "somatic",
+                "event_candidate": {
+                    key: candidate[key]
+                    for key in allowed
+                    if key in candidate
+                },
+                "derived_from": _clean_text(item.get("derived_from")),
+            })
+
     return {
         "understanding_status": "normal",
         "situated_understanding": (
@@ -336,6 +370,7 @@ def _clean_understanding(
             raw.get("capability_constraints"),
             limit=4,
         ),
+        "module_requests": module_requests,
         "memory_activation_cues": _clean_activation_cues(
             raw.get("memory_activation_cues"),
             fallback_query=event.content,
@@ -349,6 +384,12 @@ def _clean_understanding(
 
 def _build_understanding_prompt(frame: PerceptionFrame) -> str:
     """构造精简、来源无关的感知理解协议。"""
+    # 身体状态数值是身体模块的内部真值，只能用于模块计算，不能暴露给
+    # 感知理解模型或主 Agent。保留其它系统状态供本层判断能力和来源边界。
+    frame_payload = frame.to_dict()
+    public_state = dict(frame_payload.get("state_snapshot") or {})
+    public_state.pop("somatic", None)
+    frame_payload["state_snapshot"] = public_state
     return f"""
 你是通用类人 Agent 框架中的 PerceptionUnderstanding（感知理解）模块。
 输入是一份 PerceptionFrame，来源可能是用户文本、工具结果、视觉或听觉描述、
@@ -358,8 +399,9 @@ def _build_understanding_prompt(frame: PerceptionFrame) -> str:
 1. 用一句简洁的话说明当前需要处理的情境。
 2. 判断完成本轮回应时可以使用哪些知识来源。
 3. 对照 capability_snapshot，指出当前请求涉及但 Agent 实际不具备的能力。
-4. 判断当前事件可能让哪些个人长期认知自然浮现，并给出最多 3 条独立线索。
-5. 保留会实质改变回应、认知唤起或行动的重要未知。
+4. 当前事件明确包含角色世界中的身体接触或身体动作时，提出身体模块候选请求。
+5. 判断当前事件可能让哪些个人长期认知自然浮现，并给出最多 3 条独立线索。
+6. 保留会实质改变回应、认知唤起或行动的重要未知。
 
 你不回复用户，不规划回复，不调用工具，不写记忆，不判断认知身份，
 不决定 mood/energy，也不重新复述 perception_event 的表面内容。
@@ -428,8 +470,20 @@ restricted_topics：
 - 约束应说明当前只能理解、讨论、模拟或等待真实工具结果，不能写回复建议。
 - 不涉及能力冲突时输出空数组；不要把普通对话能力写成限制。
 
+# 这一步只提出身体事件候选，不能直接改变身体状态。
+第四步：判断是否需要身体模块处理。
+- 只有当前事件明确描述角色世界中的身体接触、身体动作或身体反馈时才输出请求。
+- 普通情绪表达、比喻、计划、提问、假设、否定动作或只谈论动作时不要输出请求。
+- `event_confirmed=true` 只用于文本明确陈述动作已经发生；不明确时为 false 或省略。
+- `contact_object` 写发起接触的一方，`target` 写动作目标，`contact_area` 写接触部位。
+- `execution_channel` 当前只能写 `narrative_embodied`；它表示角色世界通道，
+  不代表现实设备产生了物理动作。
+- 身体模块仍会再次校验 occurred/rejected/uncertain；这里不能输出身体数值、
+  同意、关系等级、人格变化或回复建议。
+- 没有身体事件时输出空数组。
+
 # 这一步属于框架层的“是否需要唤起长期认知”判断，不是某个角色的个性规则。
-第四步：独立判断长期认知是否可能实质改变后续处理。
+第五步：独立判断长期认知是否可能实质改变后续处理。
 这一步与 knowledge_scope 分开判断。source_limited、mixed 或 not_applicable 都不
 等于“不需要唤起认知”；知识边界只限制参数知识，不能禁止已有认知自然浮现。
 自动认知唤起不要求用户主动询问过去；只要旧认知可能实质改变当前处理就应生成 cue。
@@ -477,7 +531,7 @@ working_context 只能帮助理解当前指代和事件连续性，不能代替�
 - filters 只有在当前事件有直接证据时才填写 subject/object/memory_type；
 - derived_from 简短指出它来自当前事件或 working_context 的哪项依据。
 
-第五步：保留重要不确定性。
+第六步：保留重要不确定性。
 - 只记录答案不同会改变回应、检索或行动的未知。
 - 不要把“是否应该长期保存”列为主 Agent 需要追问的问题；记忆候选由回复后的
   后台框架自动评价，用户明确说“不记住/仅临时”时才把它作为事件事实保留。
@@ -493,7 +547,7 @@ working_context 只能帮助理解当前指代和事件连续性，不能代替�
 6. 是否越权给出了回复建议、记忆写入决定或身份裁决？
 
 【PerceptionFrame】
-{json.dumps(frame.to_dict(), ensure_ascii=False, indent=2)}
+{json.dumps(frame_payload, ensure_ascii=False, indent=2)}
 
 只输出下面形状的 JSON object，不要输出 Markdown 或额外文字：
 {{
@@ -506,6 +560,23 @@ working_context 只能帮助理解当前指代和事件连续性，不能代替�
   }},
   "capability_constraints": [
     "当前请求涉及但 capability_snapshot 不支持的能力限制"
+  ],
+  "module_requests": [
+    {{
+      "module": "somatic",
+      "event_candidate": {{
+        "event_confirmed": true,
+        "contact_object": "动作发起者",
+        "target": "动作目标",
+        "contact_area": "接触部位",
+        "intensity": "gentle | moderate | strong | unknown",
+        "duration": "brief | sustained | unknown",
+        "uncertainty": "low | medium | high",
+        "action_description": "只描述明确发生的动作",
+        "execution_channel": "narrative_embodied"
+      }},
+      "derived_from": "当前事件中的直接证据"
+    }}
   ],
   "memory_activation_cues": [
     {{

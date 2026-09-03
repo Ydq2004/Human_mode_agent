@@ -11,7 +11,10 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.perception import PerceptionFrame, create_perception_event
-from core.perception_understanding import understand_perception
+from core.perception_understanding import (
+    _build_understanding_prompt,
+    understand_perception,
+)
 
 
 class FakeResponse:
@@ -107,6 +110,27 @@ def make_scope(mode="not_applicable", **overrides):
 
 class PerceptionUnderstandingTests(unittest.TestCase):
 
+    def test_prompt_hides_internal_somatic_values(self):
+        frame = PerceptionFrame(
+            perception_event=create_perception_event("user", "text", "你好"),
+            state_snapshot={
+                "owner": "agent",
+                "mood": 50,
+                "energy": 100,
+                "somatic": {
+                    "values": {"arousal": 0.8, "sensitivity": 0.95},
+                    "revision": 13,
+                },
+            },
+        )
+
+        prompt = _build_understanding_prompt(frame)
+
+        self.assertIn('"mood": 50', prompt)
+        self.assertNotIn('"values"', prompt)
+        self.assertNotIn('"arousal": 0.8', prompt)
+        self.assertNotIn('"sensitivity": 0.95', prompt)
+
     @staticmethod
     def _run_with_output(llm, retry_llm=None):
         output = StringIO()
@@ -143,6 +167,7 @@ class PerceptionUnderstandingTests(unittest.TestCase):
                 "situated_understanding",
                 "knowledge_scope",
                 "capability_constraints",
+                "module_requests",
                 "memory_activation_cues",
                 "uncertainties",
             },

@@ -20,6 +20,9 @@ from config import (
     WORKING_CONTEXT_LLM_TIMEOUT_SECONDS,
     WORKING_CONTEXT_LLM_TEMPERATURE,
     WORKING_CONTEXT_LLM_MAX_TOKENS,
+    SOMATIC_LLM_TIMEOUT_SECONDS,
+    SOMATIC_LLM_TEMPERATURE,
+    SOMATIC_LLM_MAX_TOKENS,
 )
 
 
@@ -45,6 +48,7 @@ class AgentFactoryLLMTests(unittest.TestCase):
             sentinel.retry_understanding_llm,
             sentinel.appraisal_llm,
             sentinel.working_context_llm,
+            sentinel.somatic_llm,
         ]
 
         with (
@@ -96,7 +100,7 @@ class AgentFactoryLLMTests(unittest.TestCase):
         ):
             result = factory.create_agent_from_persona(tools=[])
 
-        self.assertEqual(len(chat_openai.call_args_list), 5)
+        self.assertEqual(len(chat_openai.call_args_list), 6)
 
         main_call = chat_openai.call_args_list[0]
         self.assertEqual(
@@ -176,9 +180,15 @@ class AgentFactoryLLMTests(unittest.TestCase):
             LLM_MAX_RETRIES,
         )
 
+        somatic_call = chat_openai.call_args_list[5]
+        self.assertEqual(somatic_call.kwargs["temperature"], SOMATIC_LLM_TEMPERATURE)
+        self.assertEqual(somatic_call.kwargs["max_tokens"], SOMATIC_LLM_MAX_TOKENS)
+        self.assertEqual(somatic_call.kwargs["timeout"], SOMATIC_LLM_TIMEOUT_SECONDS)
+
         self.assertIs(result[4], sentinel.understanding_llm)
         self.assertIs(result[5], sentinel.retry_understanding_llm)
         self.assertIs(result[6], sentinel.appraisal_llm)
+        self.assertIs(result[7], sentinel.somatic_llm)
 
         middleware = create_agent.call_args.kwargs["middleware"]
         self.assertIn(sentinel.working_context, middleware)

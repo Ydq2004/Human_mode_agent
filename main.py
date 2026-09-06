@@ -22,6 +22,7 @@ from config import (
 from core.model_io import (
     perception_event_to_model_message,
 )
+from core.vision_input import create_image_event
 
 from core.agent_factory import (
     create_agent_from_persona,
@@ -63,6 +64,8 @@ from memory.somatic_store import ensure_somatic_store, get_somatic_state
 from tools.file_tools import read_file, list_directory, write_file, apply_patch
 from tools.file_access_policy import load_policy
 from tools.somatic_tools import somatic_action, somatic_tool_context
+from tools.vision_tools import vision_describe_image, vision_tool_context
+from core.vision_service import VisionService, llm_image_observer
 from core.somatic_service import SomaticOutcome, SomaticService, format_somatic_context
 from core.somatic_simulation import (
     SomaticEventDecision,
@@ -230,6 +233,8 @@ def _build_capability_snapshot(tools: list | None, persona: dict | None = None) 
 
         tool_names.append(str(tool_name))
 
+    vision_capability = ((persona or {}).get("model") or {}).get("capabilities", {}).get("vision")
+    vision_native = vision_capability == "native"
     snapshot = {
         "owner": "agent",
         "registered_tools": tool_names,
@@ -241,6 +246,17 @@ def _build_capability_snapshot(tools: list | None, persona: dict | None = None) 
         },
         "device_control": False,
         "environment_observation": False,
+        "vision": {
+            "input_available": True,
+            "native": vision_native,
+            # 路径型视觉工具在 native 模式也存在：它把 Agent 找到的图片
+            # 临时交回主模型；tool 模式才表示会调用独立视觉模型。
+            "tool_available": "vision_describe_image" in tool_names,
+            "external_model": (
+                "vision_describe_image" in tool_names
+                and not vision_native
+            ),
+        },
         "long_term_memory_control": {
             "managed_by": "background_framework",
             "agent_can_write": False,
@@ -357,6 +373,7 @@ def _extract_tool_interactions(
     LangChain 会把工具调用放在 AIMessage.tool_calls，把返回值放在
     ToolMessage.content。这里不改变模型消息，只为 ExperienceSlice 复制
     一份记录；工具结果仍然只是观察，不会自动变成长期认知。
+
     """
     messages = list(messages or [])
     if current_event_id:
@@ -620,6 +637,7 @@ def process_perception_event(
     capability_snapshot: dict | None = None,
     event_sequence: int | None = None,
     somatic_service: SomaticService | None = None,
+    vision_service: VisionService | None = None,
 ) -> dict:
     """
     处理一个感知事件，返回本轮上下文和 ExperienceSlice。
@@ -680,7 +698,11 @@ def process_perception_event(
     try:
         # PerceptionEvent 是框架里的真实感知事件；
         # 这里仅把它转换成模型供应商能够接收的消息格式。
-        model_message = perception_event_to_model_message(event)
+        vision_cfg = (frame.capability_snapshot.get("vision") or {})
+        model_message = perception_event_to_model_message(
+            event,
+            native_vision=bool(vision_cfg.get("native")),
+        )
         # 主 Agent 的主动回忆次数属于“单轮”运行状态，
         # 必须在本次 invoke 外层建立预算，不能使用跨轮累加的全局计数。
         somatic_context_manager = (
@@ -688,7 +710,14 @@ def process_perception_event(
             if somatic_service is not None
             else nullcontext()
         )
-        with recall_call_budget(), somatic_context_manager:
+        vision_context_manager = (
+            vision_tool_context(
+                vision_service,
+                event.to_dict(),
+                native_vision=bool(vision_cfg.get("native")),
+            )
+        )
+        with recall_call_budget(), somatic_context_manager, vision_context_manager:
             result = agent.invoke(
                 {"messages": [model_message]},
                 config=agent_config,
@@ -1179,20 +1208,41 @@ def main():
         write_file,
         apply_patch,
         somatic_action,
+        vision_describe_image,
     ]
 
-    (
-        agent,
-        agent_config,
-        persona,
-        _system_prompt,
-        understanding_llm,
-        retry_understanding_llm,
-        appraisal_llm,
-        somatic_llm,
-    ) = create_agent_from_persona(
+    factory_result = create_agent_from_persona(
         tools=tools,
         file_confirm=_confirm_file_operation,
+    )
+    # 兼容外部集成方仍返回旧版 8 项工厂结果；新版第 9 项是视觉客户端。
+    if len(factory_result) == 8:
+        (
+            agent,
+            agent_config,
+            persona,
+            _system_prompt,
+            understanding_llm,
+            retry_understanding_llm,
+            appraisal_llm,
+            somatic_llm,
+        ) = factory_result
+        vision_llm = None
+    else:
+        (
+            agent,
+            agent_config,
+            persona,
+            _system_prompt,
+            understanding_llm,
+            retry_understanding_llm,
+            appraisal_llm,
+            somatic_llm,
+            vision_llm,
+        ) = factory_result
+    vision_service = (
+        VisionService(llm_image_observer(vision_llm))
+        if vision_llm is not None else None
     )
 
     # 角色卡只在实例首次启动时复制为出生人格；后续修改角色卡不会覆盖 seed。
@@ -1319,12 +1369,20 @@ def main():
                     print("\n💤 对话结束。")
                     break
 
+                if user_input.startswith("/image "):
+                    try:
+                        event = create_image_event(user_input[7:].strip())
+                    except ValueError as exc:
+                        print(f"图片输入失败：{exc}")
+                        continue
+                else:
+                    event = create_perception_event(
+                        source="user",
+                        modality="text",
+                        content=user_input,
+                    )
+
                 event_sequence += 1
-                event = create_perception_event(
-                    source="user",
-                    modality="text",
-                    content=user_input,
-                )
 
                 result = process_perception_event(
                     event,
@@ -1339,6 +1397,7 @@ def main():
                     capability_snapshot=capability_snapshot,
                     event_sequence=event_sequence,
                     somatic_service=somatic_service,
+                    vision_service=vision_service,
                 )
 
                 experience_slice = result["experience_slice"]
@@ -1362,12 +1421,11 @@ def main():
                 print("\n\n💤 输入流已关闭。")
                 break
             except Exception as exc:
-                import traceback
-
-                cancel_pending_on_shutdown = True
-                print(f"\n❌ 错误：{exc}")
-                traceback.print_exc()
-                break
+                # 单轮模型、视觉或感知调用失败只结束当前事件；清理工作在
+                # process_perception_event 的 finally 和上下文管理器中完成，
+                # 主循环继续等待下一条输入。后台任务仍按各自账本处理。
+                print(f"\n❌ 本轮处理失败：{exc}")
+                continue
     finally:
         # 关闭顺序：先停止接收/完成 appraisal，再把已结束结果交给 commit，
         # 最后等待 commit 完成并释放两边的任务记录。

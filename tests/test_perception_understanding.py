@@ -13,6 +13,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from core.perception import PerceptionFrame, create_perception_event
 from core.perception_understanding import (
     _build_understanding_prompt,
+    _parse_json_text,
     understand_perception,
 )
 
@@ -109,6 +110,12 @@ def make_scope(mode="not_applicable", **overrides):
 
 
 class PerceptionUnderstandingTests(unittest.TestCase):
+    def test_json_parser_extracts_object_after_model_reasoning(self):
+        text = "分析过程：需要输出结构化结果。最终结果如下：\n{" \
+            "\"understanding_status\": \"normal\", \"uncertainties\": []}"
+        parsed = _parse_json_text(text)
+        self.assertEqual(parsed["understanding_status"], "normal")
+
 
     def test_prompt_hides_internal_somatic_values(self):
         frame = PerceptionFrame(

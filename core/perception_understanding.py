@@ -23,11 +23,34 @@ _KNOWLEDGE_SCOPE_MODES = frozenset({
 
 
 def _parse_json_text(text: str) -> dict[str, Any]:
-    """解析 JSON mode 输出，兼容模型偶尔附带的 Markdown 围栏。"""
+    """解析结构化输出，兼容中转站把思考说明混入正文的情况。"""
     text = str(text or "").strip()
-    text = re.sub(r"^```(?:json)?\s*", "", text)
-    text = re.sub(r"\s*```$", "", text)
-    return json.loads(text)
+    try:
+        # 供应商正常返回完整 JSON 时保持原始形状，让上层区分 object/array。
+        return json.loads(text)
+    except (json.JSONDecodeError, TypeError):
+        pass
+
+    candidates = []
+    fenced = re.findall(r"```(?:json)?\s*([\s\S]*?)\s*```", text, flags=re.IGNORECASE)
+    candidates.extend(fenced)
+    decoder = json.JSONDecoder()
+    # OpenAI 兼容中转站有时返回“分析说明 + 最终 JSON”。从每个左大括号
+    # 尝试解码，并优先采用正文中最后一个完整 object，避免误取提示里的示例。
+    for index, char in enumerate(text):
+        if char == "{":
+            try:
+                value, _ = decoder.raw_decode(text[index:])
+            except json.JSONDecodeError:
+                continue
+            if isinstance(value, dict):
+                candidates.append(value)
+    last_error: Exception | None = None
+    if candidates:
+        # 说明文字里可能还有嵌套示例；优先选包含协议主字段且结构更完整的对象。
+        required = {"understanding_status", "situated_understanding", "knowledge_scope"}
+        return max(candidates, key=lambda item: (len(required.intersection(item)), len(item)))
+    raise last_error or json.JSONDecodeError("未找到 JSON object", text, 0)
 
 
 def _response_diagnostics(
@@ -452,7 +475,7 @@ knowledge_scope.mode 只能是：
 - “用 Python 分析这份电影票房 CSV”是 mixed：Python 方法可用允许领域参数知识，
   电影相关事实只能来自 CSV 或其他明确来源。
 - 半句话或指代不明且不同解释会改变来源边界，是 uncertain。
-- 拥抱、问候等不需要知识回答的互动，是 not_applicable。
+- 不需要外部知识回答的普通互动，是 not_applicable。
 
 allowed_domain_matches：
 - 只能逐字引用 persona_context.knowledge_boundary.allowed_domains 中的条目；

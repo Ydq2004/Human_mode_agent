@@ -175,7 +175,9 @@ class FileToolTests(unittest.TestCase):
             policy_path.write_text(json.dumps(self._policy(root)), encoding="utf-8")
             with patch.object(file_access_policy, "FILE_ACCESS_POLICY_PATH", policy_path):
                 result = json.loads(list_directory.invoke({"path": str(allowed), "limit": 1}))
-            self.assertEqual(result["entries"], [{"name": "only.txt", "type": "file"}])
+            self.assertEqual(result["entries"][0]["name"], "only.txt")
+            self.assertEqual(result["entries"][0]["type"], "file")
+            self.assertEqual(result["entries"][0]["path"], str(allowed / "only.txt"))
             self.assertFalse(result["truncated"])
 
     def test_authorization_middleware_rejects_without_running_tool(self):

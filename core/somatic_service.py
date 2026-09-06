@@ -269,7 +269,7 @@ def format_somatic_context(outcomes: list[SomaticOutcome]) -> str:
         return ""
     lines = [
         "【本轮身体反馈】",
-        "以下是身体模块已经完成的角色世界反馈。身体反应不代表同意、好感或关系变化。",
+        "以下是身体模块已经完成的反馈，只描述身体层信息；其他状态由相应模块提供。",
     ]
     for item in completed:
         lines.append(f"- 内感受：{item.interoception_description}")

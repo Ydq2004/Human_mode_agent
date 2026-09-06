@@ -62,11 +62,10 @@ def somatic_action(
     duration: str,
     tool_call_id: Annotated[str, InjectedToolCallId],
 ) -> ToolMessage:
-    """在角色世界中执行一次身体动作，并取得真实的内感受与外在反馈。
+    """执行一次新的具身动作，并返回身体模块的外在反应与内感受。
 
-    仅当你确实决定做出身体动作时调用。参数分别描述动作、目标、接触部位、
-    强度（gentle/moderate/strong）和持续时间（brief/sustained）。
-    工具成功只代表角色世界中的动作成立，不代表现实设备产生物理动作。
+    仅在确实要执行主动动作时调用。参数描述动作、目标、接触部位、强度和持续时间；
+    工具返回的 status 是这次动作是否在当前执行通道中成立的依据。
     """
     runtime = _RUNTIME.get()
     if runtime is None:
@@ -113,9 +112,7 @@ def somatic_action(
         "status": status,
         "execution_channel": "narrative_embodied",
         "outcome": outcome.to_dict(),
-        "source_boundary": (
-            "动作和反馈发生在当前角色世界；现实设备是否执行物理动作由独立设备能力决定。"
-        ),
+        "source_boundary": "结果只描述当前执行通道中的动作和身体反馈，通道能力以能力快照为准。",
     }
     # content 是模型可见结果：只给执行状态、动作反馈和内感受，不给身体
     # 状态数值或 revision。artifact 是框架内部记录，供 ExperienceSlice

@@ -1,5 +1,5 @@
 {
-  "read_roots": ["."],
+  "read_roots": [".","C:\\Users\\21968\\Pictures\\Camera Roll","C:\\Users\\21968\\Desktop"],
   "write_roots": ["docs", "tests"],
   "sensitive_patterns": [
     ".env",

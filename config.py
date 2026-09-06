@@ -29,8 +29,8 @@ DEFAULT_LLM_CONFIG = {
 }
 
 # 每个 LLM 请求必须有截止时间，避免后台线程退出时无限等待。
-MAIN_LLM_TIMEOUT_SECONDS = 90.0
-UNDERSTANDING_LLM_TIMEOUT_SECONDS = 50.0
+MAIN_LLM_TIMEOUT_SECONDS = 240.0
+UNDERSTANDING_LLM_TIMEOUT_SECONDS = 60.0
 APPRAISAL_LLM_TIMEOUT_SECONDS = 90.0
 LLM_MAX_RETRIES = 1
 
@@ -68,6 +68,21 @@ SUMMARY_RETRY_DELAY_SECONDS = 300.0
 SUMMARY_LLM_TIMEOUT_SECONDS = 90.0
 SUMMARY_LLM_TEMPERATURE = 0.1
 SUMMARY_LLM_MAX_TOKENS = 2048
+
+# 独立视觉观察模型；只输出图片观察，不参与主 Agent 的人格或记忆裁决。
+VISION_LLM_TIMEOUT_SECONDS = 90.0
+VISION_LLM_TEMPERATURE = 0.1
+VISION_LLM_MAX_TOKENS = 2048
+# 防止 Agent 在一次模型调用中反复读取同一批图片；这是工具调用上限，
+# 不限制用户下一轮继续观察新的图片。
+VISION_MAX_CALLS_PER_TURN = 3
+# 视觉工具使用的独立模型配置。API Key 只从 api_key_env 指定的环境变量读取。
+VISION_LLM_CONFIG = {
+    "provider": "gemini",
+    "model_name": "gemini-3.8-flash",
+    "base_url": "https://tengsuan.xiweinet.com/v1",
+    "api_key_env": "TENG_GEMINI_API_KEY",
+}
 
 
 # ========== 情绪运行状态 ==========

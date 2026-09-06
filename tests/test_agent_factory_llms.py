@@ -40,6 +40,7 @@ class AgentFactoryLLMTests(unittest.TestCase):
             "model_name": "test-model",
             "base_url": "https://example.invalid",
             "temperature": 0.7,
+            "capabilities": {"vision": "native"},
         }
 
         clients = [

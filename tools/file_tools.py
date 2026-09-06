@@ -86,6 +86,9 @@ def list_directory(path: str, recursive: bool = False, limit: int = 100) -> str:
             entries.append({
                 "name": str(item.relative_to(target)).replace("\\", "/"),
                 "type": "directory" if item.is_dir() else "file",
+                # 让后续工具可以直接复用经过策略检查的绝对路径，
+                # 尤其是 vision_describe_image 观察目录中的图片。
+                "path": str(item.resolve()),
             })
     except OSError as exc:
         return _result("list", "error", path, reason=str(exc))

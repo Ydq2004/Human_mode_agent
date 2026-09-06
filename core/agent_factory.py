@@ -14,7 +14,11 @@ from langchain.agents.middleware import (
     wrap_model_call,
 )
 
-from core.model_io import render_perception_times_for_model
+from core.model_io import render_native_images_for_model, render_perception_times_for_model
+from tools.vision_tools import (
+    current_vision_event_id,
+    render_native_vision_for_model,
+)
 from config import (
     APPRAISAL_LLM_TIMEOUT_SECONDS,
     APPRAISAL_LLM_MAX_TOKENS,
@@ -35,6 +39,10 @@ from config import (
     SOMATIC_LLM_TIMEOUT_SECONDS,
     SOMATIC_LLM_TEMPERATURE,
     SOMATIC_LLM_MAX_TOKENS,
+    VISION_LLM_TIMEOUT_SECONDS,
+    VISION_LLM_TEMPERATURE,
+    VISION_LLM_MAX_TOKENS,
+    VISION_LLM_CONFIG,
 )
 from core.working_context import WorkingContextMiddleware
 from persona.loader import load_persona, get_model_config, build_system_prompt
@@ -69,6 +77,13 @@ def render_event_times(request, handler):
     rendered_messages = render_perception_times_for_model(
         request.messages
     )
+    rendered_messages = render_native_images_for_model(
+        rendered_messages,
+        current_event_id=current_vision_event_id(),
+    )
+    # 视觉工具返回的 native 引用只在这次模型请求中展开为图片块。
+    # 具体 runtime 由 process_perception_event 在 agent.invoke 外层绑定。
+    rendered_messages = render_native_vision_for_model(rendered_messages)
 
     model_request = request.override(
         messages=rendered_messages
@@ -88,7 +103,7 @@ def create_agent_from_persona(tools: list = None, file_confirm=None):
       返回:
           (agent, config, persona, system_prompt,
            understanding_llm, retry_understanding_llm, appraisal_llm,
-           somatic_llm)
+           somatic_llm, vision_llm)
       """
       if tools is None:
           tools = []
@@ -98,6 +113,13 @@ def create_agent_from_persona(tools: list = None, file_confirm=None):
 
       # 获取 LLM 配置
       model_cfg = get_model_config(persona)
+      # 能力声明是适配器选择：明确 native 才把图片交给主模型；未声明或
+      # 无法识别的值统一走独立视觉工具，避免工具注册但实际没有后端。
+      requested_vision_mode = ((model_cfg.get("capabilities") or {}).get("vision"))
+      vision_mode = "native" if requested_vision_mode == "native" else "tool"
+      # 视觉工具在两种模式都可以注册：native 模式下它负责把 Agent 找到的
+      # 路径临时送回主模型，tool 模式下才调用独立视觉模型。
+      effective_tools = list(tools)
       provider = model_cfg.get("provider", "deepseek")
 
       default_base_url = "https://api.deepseek.com"
@@ -193,6 +215,26 @@ def create_agent_from_persona(tools: list = None, file_confirm=None):
           max_retries=LLM_MAX_RETRIES,
       )
 
+      # 独立视觉模型：只有角色卡明确启用视觉工具时才创建，避免普通角色
+      # 无故增加一次模型客户端；当前仍沿用同一 Gemini 兼容端点。
+      vision_llm = None
+      if vision_mode == "tool":
+          vision_cfg = dict(VISION_LLM_CONFIG)
+          # 角色卡只允许显式覆盖视觉能力模式，不把模型地址和密钥混入角色人格配置。
+          vision_api_env = str(vision_cfg.get("api_key_env") or "").strip()
+          vision_api_key = os.environ.get(vision_api_env, "").strip()
+          if not vision_api_key:
+              raise RuntimeError(f"环境变量 {vision_api_env} 未设置或为空")
+          vision_llm = ChatOpenAI(
+              model=vision_cfg["model_name"],
+              api_key=vision_api_key,
+              base_url=vision_cfg["base_url"],
+              temperature=VISION_LLM_TEMPERATURE,
+              max_tokens=VISION_LLM_MAX_TOKENS,
+              timeout=VISION_LLM_TIMEOUT_SECONDS,
+              max_retries=LLM_MAX_RETRIES,
+          )
+
       
 
       # 对话持久化
@@ -220,7 +262,7 @@ def create_agent_from_persona(tools: list = None, file_confirm=None):
 
       agent = create_agent(
           model=llm,
-          tools=tools,
+          tools=effective_tools,
           system_prompt=system_prompt,
           checkpointer=checkpointer,
           middleware=middleware,
@@ -237,4 +279,5 @@ def create_agent_from_persona(tools: list = None, file_confirm=None):
           retry_understanding_llm,
           appraisal_llm,
           somatic_llm,
+          vision_llm,
       )

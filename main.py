@@ -59,12 +59,21 @@ from memory.experience_store import (
 from memory.recall_tools import recall_call_budget, recall_memory
 from memory.summary_scheduler import generate_missing_period_summaries
 from memory import commit_store
+from memory import background_task_store
 from memory.personality_store import ensure_personality_seed_from_persona
 from memory.somatic_store import ensure_somatic_store, get_somatic_state
 from tools.file_tools import read_file, list_directory, write_file, apply_patch
 from tools.file_access_policy import load_policy
 from tools.somatic_tools import somatic_action, somatic_tool_context
 from tools.vision_tools import vision_describe_image, vision_tool_context
+from tools.background_task_tools import (
+    background_task_context,
+    cancel_background_task,
+    consult_advanced_model,
+    get_background_task_status,
+    list_background_tasks,
+    start_code_review,
+)
 from core.vision_service import VisionService, llm_image_observer
 from core.somatic_service import SomaticOutcome, SomaticService, format_somatic_context
 from core.somatic_simulation import (
@@ -72,6 +81,10 @@ from core.somatic_simulation import (
     create_somatic_interoception,
     create_somatic_response,
 )
+from core.background_task_events import BackgroundTaskEventBus
+from core.background_task_worker import BackgroundTaskWorker
+from core.advanced_model_service import create_advanced_llm, run_code_review
+from config import BACKGROUND_TASK_STALE_MINUTES
 
 
 _DEBUG_SEPARATOR = "-" * 72
@@ -638,6 +651,10 @@ def process_perception_event(
     event_sequence: int | None = None,
     somatic_service: SomaticService | None = None,
     vision_service: VisionService | None = None,
+    background_task_worker: BackgroundTaskWorker | None = None,
+    background_task_event_bus: BackgroundTaskEventBus | None = None,
+    advanced_llm=None,
+    persona_instance_id: str | None = None,
 ) -> dict:
     """
     处理一个感知事件，返回本轮上下文和 ExperienceSlice。
@@ -717,7 +734,18 @@ def process_perception_event(
                 native_vision=bool(vision_cfg.get("native")),
             )
         )
-        with recall_call_budget(), somatic_context_manager, vision_context_manager:
+        background_context_manager = (
+            background_task_context(
+                worker=background_task_worker,
+                event_bus=background_task_event_bus,
+                llm=advanced_llm,
+                persona_instance_id=str(persona_instance_id or persona.get("persona_instance_id") or persona.get("agent_name") or ""),
+                thread_id=thread_id,
+                source_event_id=event.event_id,
+            )
+            if background_task_worker is not None else nullcontext()
+        )
+        with recall_call_budget(), somatic_context_manager, vision_context_manager, background_context_manager:
             result = agent.invoke(
                 {"messages": [model_message]},
                 config=agent_config,
@@ -1179,6 +1207,30 @@ def _consume_finished_commit_jobs(
             )
 
 
+def _consume_background_task_events(event_bus: BackgroundTaskEventBus) -> None:
+    """在主循环安全边界显示后台任务完成/失败通知。
+
+    事件总线只是唤醒提示，完整结果仍须通过 get_background_task_status 查询；
+    主循环不把后台线程的结果直接伪装成新的用户消息。
+    """
+    for event in event_bus.drain(limit=50):
+        try:
+            payload = event.get("payload") or {}
+            task_id = payload.get("task_id") or event.get("task_id")
+            status = payload.get("status") or "unknown"
+            if event.get("event_type") == "completed":
+                print(f"\n后台任务已完成：{task_id}（{status}）。可调用 get_background_task_status 查看结果。")
+            elif event.get("event_type") == "failed":
+                message = str(payload.get("error_message") or "未知错误")[:300]
+                print(f"\n后台任务失败：{task_id}（{status}）：{message}")
+            elif event.get("event_type") == "retry_scheduled":
+                print(f"\n后台任务将重试：{task_id}。")
+            if not event_bus.acknowledge(event["event_id"]):
+                event_bus.requeue(event["event_id"])
+        except Exception:
+            event_bus.requeue(event.get("event_id", ""))
+
+
 def main():
     # 存储初始化属于应用启动阶段，不能在“导入某个 Python 模块”时偷偷
     # 发生。Card_slot 是可替换实例槽，缺少 memory_db 时会在这里创建。
@@ -1187,6 +1239,12 @@ def main():
     # 只创建新记忆系统的结构表。
     # 不再调用旧的 Chroma-only genesis memory。
     ensure_memory_store()
+    background_task_store.ensure_background_task_store()
+    recovered_background = background_task_store.recover_stale_tasks(
+        max_age_minutes=BACKGROUND_TASK_STALE_MINUTES,
+    )
+    if recovered_background:
+        print(f"后台任务恢复：{len(recovered_background)} 个任务")
 
     # 启动时补齐昨天、上周和上月的派生摘要。它只读 SQLite、
     # 不调用 LLM；摘要失败不能阻塞主 Agent 启动，原始经历仍然保留。
@@ -1209,6 +1267,11 @@ def main():
         apply_patch,
         somatic_action,
         vision_describe_image,
+        consult_advanced_model,
+        start_code_review,
+        get_background_task_status,
+        list_background_tasks,
+        cancel_background_task,
     ]
 
     factory_result = create_agent_from_persona(
@@ -1244,6 +1307,9 @@ def main():
         VisionService(llm_image_observer(vision_llm))
         if vision_llm is not None else None
     )
+    advanced_llm = create_advanced_llm()
+    if advanced_llm is None:
+        print("高级模型未配置：咨询和代码审核工具当前不可用")
 
     # 角色卡只在实例首次启动时复制为出生人格；后续修改角色卡不会覆盖 seed。
     # 当前只建立人格演化的输入，不把人格快照注入主 Agent。
@@ -1251,6 +1317,15 @@ def main():
     persona_instance_id = str(personality_seed["persona_instance_id"])
 
     thread_id = DEFAULT_THREAD_ID
+    background_event_bus = BackgroundTaskEventBus()
+    background_event_bus.recover(limit=100)
+    background_worker = BackgroundTaskWorker(event_bus=background_event_bus)
+    if advanced_llm is not None:
+        background_worker.register(
+            "code_review",
+            lambda task: run_code_review(task, advanced_llm),
+        )
+    background_worker.submit_due(limit=100)
     ensure_somatic_store()
     embodiment = dict(persona.get("embodiment") or {})
     somatic_service = SomaticService(
@@ -1357,6 +1432,7 @@ def main():
                     appraisal_worker,
                     commit_worker,
                 )
+                _consume_background_task_events(background_event_bus)
 
                 user_input = input("\n我：").strip()
                 if not user_input:
@@ -1398,6 +1474,10 @@ def main():
                     event_sequence=event_sequence,
                     somatic_service=somatic_service,
                     vision_service=vision_service,
+                    background_task_worker=background_worker,
+                    background_task_event_bus=background_event_bus,
+                    advanced_llm=advanced_llm,
+                    persona_instance_id=persona_instance_id,
                 )
 
                 experience_slice = result["experience_slice"]
@@ -1443,6 +1523,8 @@ def main():
             commit_worker,
         )
         vector_repair_worker.shutdown(wait=True)
+        background_worker.shutdown(wait=True)
+        _consume_background_task_events(background_event_bus)
 
 if __name__ == "__main__":
     main()

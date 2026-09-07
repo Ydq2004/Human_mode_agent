@@ -84,6 +84,24 @@ VISION_LLM_CONFIG = {
     "api_key_env": "TENG_GEMINI_API_KEY",
 }
 
+# 高级模型咨询与代码审核使用独立配置；缺少密钥时这两个可选能力保持不可用，
+# 不影响主 Agent 启动。审核默认只读，不允许调用本地写入或执行命令。
+ADVANCED_LLM_TIMEOUT_SECONDS = 120.0
+ADVANCED_LLM_TEMPERATURE = 0.1
+ADVANCED_LLM_MAX_TOKENS = 4096
+ADVANCED_CONSULT_MAX_CALLS_PER_TURN = 2
+BACKGROUND_TASK_STALE_MINUTES = 30.0
+REVIEW_MAX_FILES = 80
+REVIEW_MAX_READ_BYTES = 2 * 1024 * 1024
+REVIEW_MAX_TOOL_CALLS = 40
+REVIEW_MAX_ROUNDS = 12
+ADVANCED_LLM_CONFIG = {
+    "provider": "advanced",
+    "model_name": "gpt-6-astra",
+    "base_url": "https://tntapi.com/v1",
+    "api_key_env": "TNT_GPT_API_KEY",
+}
+
 
 # ========== 情绪运行状态 ==========
 MOOD_MIN = 0

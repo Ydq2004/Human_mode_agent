@@ -1,6 +1,6 @@
 # CURRENT_HANDOFF
 
-更新时间：2026-09-04
+更新时间：2026-09-07
 
 用途：新会话开始时，先读取 `AGENTS.md`、`docs/Phase0_Memory_Architecture_Redesign.md` 和本文件，再继续工作。
 
@@ -571,3 +571,18 @@ Agent 主动观察的目录必须配置在 `Card_slot/file_access_policy.json` �
 2026-09-06：部分中转站会把模型分析说明混入 PerceptionUnderstanding 正文，导致严格
 `json.loads` 失败。解析器现先接受完整 JSON，再从夹杂说明的正文提取协议对象；若仍无法
 确定则继续使用原有保守降级，不把模型说明当作已确认理解。
+
+## 通用后台任务基础设施（2026-09-07，第一版）
+
+已新增 `background_tasks` / `background_task_events` 持久账本、进程内 Worker 和事件总线。
+它服务 Agent 主动发起的高级咨询与代码审核，不替代 appraisal/commit 核心流水线。主循环
+启动时恢复失联任务，回合边界消费完成/失败通知；详细结果通过状态工具读取。
+
+已注册工具：`consult_advanced_model`（同步只读咨询）、`start_code_review`（异步只读审核）、
+`get_background_task_status`、`list_background_tasks`、`cancel_background_task`。审核器只能读取
+任务范围与全局白名单的交集，不能写文件、执行命令或修改数据库。实现和当前限制见
+`docs/BACKGROUND_TASKS.md`。
+
+尚未完成独立操作系统进程、实时打断阻塞式 CLI 输入、后台结果自动转为新的
+`PerceptionEvent/ExperienceSlice`；这些属于后续扩展。真实长时间运行需重点观察失败日志、
+重启恢复、重试次数和审核报告质量。

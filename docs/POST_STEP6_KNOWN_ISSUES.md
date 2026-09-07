@@ -288,7 +288,10 @@ MemoryEntity 的 `created_at` 和 `last_mentioned_at` 只负责告诉 Agent “�
 咨询调用需要独立的模型配置、API 密钥、超时和次数预算，失败时返回明确的不确定状态。
 调用和返回结果应进入 `ExperienceSlice`，以便后续回溯“Agent 为什么采用某个方案”。
 
-该方向目前只完成架构记录，尚未实现。施工前需要先确定触发条件、上下文范围、返回格式和用户可见性。
+第一版已实现：`consult_advanced_model` 为同步只读咨询；`start_code_review` 基于通用
+`background_tasks` 异步运行只读审核，并可用状态工具查询结果。详细状态机、恢复和权限
+边界见 `docs/BACKGROUND_TASKS.md`。仍需在真实长时间运行中观察失败日志、重启恢复和审核
+报告质量。
 
 ## 2026-08-30 后续施工计划（历史记录，当前进度见 CURRENT_HANDOFF）
 

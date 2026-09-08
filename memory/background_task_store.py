@@ -26,7 +26,7 @@ TERMINAL_STATUSES = frozenset({
     "succeeded", "failed", "timeout", "cancelled", "abandoned", "exhausted",
 })
 _TRANSITIONS = {
-    "queued": {"running", "cancel_requested", "abandoned"},
+    "queued": {"running", "cancel_requested", "failed", "abandoned"},
     "running": {"succeeded", "failed", "timeout", "cancel_requested", "retry_wait", "abandoned", "exhausted"},
     "cancel_requested": {"cancelled", "succeeded", "failed", "timeout"},
     "retry_wait": {"queued", "abandoned"},

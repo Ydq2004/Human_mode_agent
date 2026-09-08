@@ -71,6 +71,7 @@ SUMMARY_LLM_MAX_TOKENS = 2048
 
 # 独立视觉观察模型；只输出图片观察，不参与主 Agent 的人格或记忆裁决。
 VISION_LLM_TIMEOUT_SECONDS = 90.0
+VISION_SERVICE_TIMEOUT_SECONDS = 95.0
 VISION_LLM_TEMPERATURE = 0.1
 VISION_LLM_MAX_TOKENS = 2048
 # 防止 Agent 在一次模型调用中反复读取同一批图片；这是工具调用上限，
@@ -88,6 +89,7 @@ VISION_LLM_CONFIG = {
 # Agent 只能提交通用生成参数，不能修改 ComfyUI 节点、模型名或连接关系。
 COMFYUI_BASE_URL = "http://127.0.0.1:8188"
 IMAGE_GENERATION_WORKFLOW_PATH = PROJECT_ROOT / "Card_slot" / "image_generation" / "workflow_api.json"
+IMAGE_GENERATION_UPSCALE_WORKFLOW_PATH = PROJECT_ROOT / "Card_slot" / "image_generation" / "workflow_api_upscale.json"
 IMAGE_GENERATION_OUTPUT_ROOT = PROJECT_ROOT / "Card_slot" / "generated_images"
 IMAGE_GENERATION_TIMEOUT_SECONDS = 300.0
 IMAGE_GENERATION_POLL_INTERVAL_SECONDS = 1.0
@@ -96,12 +98,25 @@ IMAGE_GENERATION_MAX_WIDTH = 2048
 IMAGE_GENERATION_MAX_HEIGHT = 2048
 # 下载工作流后只需填写对应节点和 input 名称；空映射会安全返回配置缺失。
 IMAGE_GENERATION_FIELD_MAP = {
-    "positive_prompt": {"node_id": "", "input": ""},
-    "negative_prompt": {"node_id": "", "input": ""},
-    "width": {"node_id": "", "input": ""},
-    "height": {"node_id": "", "input": ""},
-    "seed": {"node_id": "", "input": ""},
+    "positive_prompt": [{"node_id": "11", "input": "text"}],
+    "negative_prompt": [{"node_id": "3", "input": "text"}],
+    "width": [{"node_id": "6", "input": "width"}],
+    "height": [{"node_id": "6", "input": "height"}],
+    "seed": [{"node_id": "10", "input": "seed"}],
 }
+# 放大工作流保留独立映射，因为它的节点结构与普通工作流不同。
+IMAGE_GENERATION_UPSCALE_FIELD_MAP = {
+    "positive_prompt": [{"node_id": "28", "input": "text"}],
+    "negative_prompt": [{"node_id": "3", "input": "text"}],
+    "width": [{"node_id": "12", "input": "width"}],
+    "height": [{"node_id": "12", "input": "height"}],
+    "seed": [
+        {"node_id": "4", "input": "seed"},
+        {"node_id": "25", "input": "seed"},
+    ],
+}
+IMAGE_GENERATION_OUTPUT_NODE_ID = "8"
+IMAGE_GENERATION_UPSCALE_OUTPUT_NODE_ID = "31"
 
 # 高级模型咨询与代码审核使用独立配置；缺少密钥时这两个可选能力保持不可用，
 # 不影响主 Agent 启动。审核默认只读，不允许调用本地写入或执行命令。
@@ -110,6 +125,7 @@ ADVANCED_LLM_TEMPERATURE = 0.1
 ADVANCED_LLM_MAX_TOKENS = 4096
 ADVANCED_CONSULT_MAX_CALLS_PER_TURN = 2
 BACKGROUND_TASK_STALE_MINUTES = 30.0
+BACKGROUND_TASK_REVIEW_TIMEOUT_SECONDS = 600.0
 REVIEW_MAX_FILES = 80
 REVIEW_MAX_READ_BYTES = 2 * 1024 * 1024
 REVIEW_MAX_TOOL_CALLS = 40
@@ -282,6 +298,7 @@ WORKING_CONTEXT_LLM_MAX_TOKENS = 2048
 # 身体评价在主 Agent 回复前同步运行，因此使用独立的低温度和较短输出。
 # LLM 只输出变化方向/幅度与描述，绝对状态仍由代码计算和提交。
 SOMATIC_LLM_TIMEOUT_SECONDS = 60.0
+SOMATIC_SERVICE_TIMEOUT_SECONDS = 65.0
 SOMATIC_LLM_TEMPERATURE = 0.1
 SOMATIC_LLM_MAX_TOKENS = 1024
 # 限制 Agent 单轮主动身体动作次数，防止工具循环反复改变状态。

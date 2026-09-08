@@ -59,14 +59,16 @@ generate_visual(
 
 Agent 不应直接修改节点编号、采样器、模型文件名或工作流连接关系。那些属于工具实现和运行配置，便于以后替换 ComfyUI 或更换工作流。
 
+工具参数中的 `upscale` 默认是 `false`。关闭时只提交普通文生图工作流，避免每次生成都执行放大采样；开启时才提交放大工作流。两份工作流可以使用不同的节点编号和字段映射，映射由 `config.py` 维护。
+
 ## 4. 工作流连接方式
 
-在 ComfyUI 中搭好并验证一个工作流后，导出 API 格式的 workflow JSON。工具读取这份模板，只修改允许暴露的输入字段，例如正向提示词、反向提示词、尺寸、种子和参考图。
+在 ComfyUI 中搭好并验证一个工作流后，导出 API 格式的 workflow JSON。工具读取已配置的工作流模板，只修改允许暴露的输入字段，例如正向提示词、反向提示词、尺寸和种子。普通输出与放大输出使用两份独立的 API 工作流，由 `upscale` 开关选择；不在运行时删除节点或猜测节点连接关系。
 
 最小连接关系如下：
 
 ```text
-工具加载 workflow_api.json
+工具根据 upscale 选择 workflow_api.json 或 workflow_api_upscale.json
         ↓
 替换允许修改的节点输入
         ↓
@@ -138,8 +140,13 @@ AgentAction → tool result / observation → ExperienceSlice
 `tools/image_generation_tools.py` 注册了通用 `generate_visual` 工具，主循环已绑定图片生成服务。
 没有工作流模板或字段映射时，工具返回 `configuration_missing`，不会伪造成功。
 
-当前仍需用户准备一个 ComfyUI API 格式工作流，并在 `config.py` 的
-`IMAGE_GENERATION_WORKFLOW_PATH`、`IMAGE_GENERATION_OUTPUT_ROOT` 和
-`IMAGE_GENERATION_FIELD_MAP` 中配置路径与字段映射。配置完成后再进行真实 ComfyUI 最小闭环
-验收。视觉感知模块已经存在，但“看见图片”和“生成图片”仍是两个独立能力；生图结果需要
-再次理解时，重新调用视觉工具。
+当前已配置两份工作流：`workflow_api.json` 是普通输出，`workflow_api_upscale.json` 是放大输出。
+普通工作流的提示词、尺寸、种子映射到 `11.text`、`3.text`、`6.width/height`、`10.seed`；
+放大工作流的映射仍为 `28.text`、`3.text`、`12.width/height`、`4.seed` 和 `25.seed`。
+普通工作流只执行一次采样和一次输出，放大工作流才执行第二次采样和放大输出。ComfyUI 输出通过 `/view`
+读取后复制到 `Card_slot/generated_images/`，不依赖 ComfyUI 安装目录。
+
+2026-09-08 已完成一次真实最小闭环：ComfyUI `0.18.2` 返回 `prompt_id`，项目成功取得
+PNG 输出并完成 SHA-256 校验。曾发现未提供 seed 时把 `null` 写入两个 KSampler 会导致
+ComfyUI 400；现已改为保留模板默认 seed。视觉感知模块已经存在，但“看见图片”和“生成图片”
+仍是两个独立能力；生图结果需要再次理解时，重新调用视觉工具。

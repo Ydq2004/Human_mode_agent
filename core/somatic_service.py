@@ -21,6 +21,7 @@ from memory.somatic_store import (
     get_somatic_operation,
     get_somatic_state,
 )
+from config import SOMATIC_SERVICE_TIMEOUT_SECONDS
 
 
 @dataclass(frozen=True)
@@ -89,6 +90,7 @@ class SomaticService:
         persona_context: Mapping[str, Any] | None = None,
         enabled: bool = True,
         allow_agent_initiated_actions: bool = True,
+        timeout_seconds: float | None = SOMATIC_SERVICE_TIMEOUT_SECONDS,
     ) -> None:
         self.persona_instance_id = str(persona_instance_id or "").strip()
         self.thread_id = str(thread_id or "").strip()
@@ -98,6 +100,7 @@ class SomaticService:
         self.persona_context = dict(persona_context or {})
         self.enabled = bool(enabled)
         self.allow_agent_initiated_actions = bool(allow_agent_initiated_actions)
+        self.timeout_seconds = timeout_seconds
 
     def current_state(self):
         return get_somatic_state(self.persona_instance_id, self.thread_id)
@@ -197,6 +200,7 @@ class SomaticService:
             state=current.state,
             event_context=dict(event_context or request or {}),
             persona_context=self.persona_context,
+            timeout_seconds=self.timeout_seconds,
         )
         if appraisal.status != "normal":
             return SomaticOutcome(

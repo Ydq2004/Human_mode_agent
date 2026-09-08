@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 from core.somatic_simulation import BODY_STATE_DELTA, SomaticEventDecision, SomaticState
+from core.operation_timeout import run_with_timeout
 
 
 _DIRECTIONS = frozenset({"increase", "decrease", "unchanged"})
@@ -154,6 +155,7 @@ def appraise_somatic_event(
     state: SomaticState,
     event_context: Mapping[str, Any],
     persona_context: Mapping[str, Any] | None = None,
+    timeout_seconds: float | None = None,
 ) -> SomaticAppraisal:
     """调用身体评价 LLM；任何失败都显式返回 failed，不修改状态。"""
     if decision.status != "occurred":
@@ -162,15 +164,19 @@ def appraise_somatic_event(
             error="只有 occurred 身体事件可以评价",
         )
     try:
-        response = llm.bind(response_format={"type": "json_object"}).invoke(
-            _build_prompt(
-                decision=decision,
-                state=state,
-                event_context=event_context,
-                persona_context=persona_context,
-            )
+        prompt = _build_prompt(
+            decision=decision,
+            state=state,
+            event_context=event_context,
+            persona_context=persona_context,
+        )
+        response = run_with_timeout(
+            lambda: llm.bind(response_format={"type": "json_object"}).invoke(prompt),
+            timeout_seconds,
         )
         return clean_somatic_appraisal(_parse_json(getattr(response, "content", None)))
+    except TimeoutError as exc:
+        return SomaticAppraisal(status="failed", error=str(exc) or "身体评价服务超时")
     except Exception as exc:
         return SomaticAppraisal(
             status="failed",

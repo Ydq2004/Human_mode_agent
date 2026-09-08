@@ -7,6 +7,7 @@ Agent，也不会直接修改 checkpoint。任务结果通过持久化事件交�
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+import logging
 from threading import Event, Lock, Thread
 from time import sleep
 from time import monotonic
@@ -38,6 +39,8 @@ class BackgroundTaskWorker:
         self._event_bus = event_bus
         self._stop_event = Event()
         self._poll_interval = 1.0
+        self._poll_error_count = 0
+        self._logger = logging.getLogger(__name__)
         self._poller = Thread(target=self._poll_loop, name="background-task-dispatch", daemon=False)
         self._poller.start()
 
@@ -75,9 +78,13 @@ class BackgroundTaskWorker:
         while not self._stop_event.is_set():
             try:
                 self.submit_due(limit=50)
+                self._poll_error_count = 0
+                self._poll_interval = 1.0
             except Exception:
                 # 任务本身的账本会保留状态；调度线程异常不能杀死主程序。
-                pass
+                self._poll_error_count += 1
+                self._logger.exception("后台任务轮询失败（连续第 %s 次）", self._poll_error_count)
+                self._poll_interval = min(30.0, max(1.0, self._poll_interval * 2))
             self._stop_event.wait(self._poll_interval)
 
     def _run(self, task_id: str) -> None:

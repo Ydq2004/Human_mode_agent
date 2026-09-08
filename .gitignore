@@ -6,6 +6,7 @@
 
 #聊天记录
 /Card_slot/memory_db/
+/Card_slot/generated_images/
 
 # AI 工具本地配置
 /.claude/

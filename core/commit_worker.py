@@ -38,6 +38,7 @@ class _CommitRecord:
     completed_at: str | None = None
     result: dict[str, Any] | None = None
     error: str | None = None
+    ledger_error: str | None = None
     delivered: bool = False
 
 
@@ -222,11 +223,17 @@ class CommitWorker:
                     record.result = deepcopy(result)
                     record.completed_at = datetime.now().isoformat()
                 if self._ledger is not None:
-                    self._ledger.mark_commit_terminal(
-                        task.job_id,
-                        status=COMMITTED,
-                        result=result,
-                    )
+                    try:
+                        self._ledger.mark_commit_terminal(
+                            task.job_id,
+                            status=COMMITTED,
+                            result=result,
+                        )
+                    except Exception as ledger_exc:
+                        # 业务副作用已经完成，账本同步失败不能把真实结果改写成
+                        # commit_failed；保留独立错误供上层补偿或人工处理。
+                        with self._condition:
+                            record.ledger_error = f"{type(ledger_exc).__name__}: {ledger_exc}"
             except Exception as exc:
                 with self._condition:
                     record.status = COMMIT_FAILED
@@ -272,4 +279,5 @@ class CommitWorker:
             "completed_at": record.completed_at,
             "result": deepcopy(record.result),
             "error": record.error,
+            "ledger_error": record.ledger_error,
         }

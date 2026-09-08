@@ -4,18 +4,21 @@ from __future__ import annotations
 from typing import Any, Callable, Mapping
 import json
 from core.vision_input import image_content_block
+from core.operation_timeout import run_with_timeout
+from config import VISION_SERVICE_TIMEOUT_SECONDS
 from langchain_core.messages import HumanMessage
 
 
 class VisionService:
-    def __init__(self, observer: Callable[[str, str], dict[str, Any]] | None = None):
+    def __init__(self, observer: Callable[[str, str], dict[str, Any]] | None = None, *, timeout_seconds: float | None = VISION_SERVICE_TIMEOUT_SECONDS):
         self.observer = observer
+        self.timeout_seconds = timeout_seconds
 
     def describe(self, attachment_path: str | Mapping[str, Any], focus: str = "") -> dict[str, Any]:
         if self.observer is None:
             return {"status": "unavailable", "observations": [], "uncertainties": ["当前没有配置视觉模型"]}
         try:
-            raw = self.observer(attachment_path, focus)
+            raw = run_with_timeout(lambda: self.observer(attachment_path, focus), self.timeout_seconds)
             if not isinstance(raw, dict):
                 raise ValueError("视觉模型返回格式错误")
             return {
@@ -24,6 +27,8 @@ class VisionService:
                 "visible_text": [str(x) for x in raw.get("visible_text", []) if str(x).strip()][:12],
                 "uncertainties": [str(x) for x in raw.get("uncertainties", []) if str(x).strip()][:12],
             }
+        except TimeoutError as exc:
+            return {"status": "timeout", "observations": [], "uncertainties": [str(exc) or "视觉服务超时"]}
         except Exception as exc:
             return {"status": "failed", "observations": [], "uncertainties": [str(exc)]}
 

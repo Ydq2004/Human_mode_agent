@@ -587,15 +587,26 @@ Agent 主动观察的目录必须配置在 `Card_slot/file_access_policy.json` �
 `PerceptionEvent/ExperienceSlice`；这些属于后续扩展。真实长时间运行需重点观察失败日志、
 重启恢复、重试次数和审核报告质量。
 
+2026-09-08 已核实并修正核心审查报告中的可靠性风险：后台审核增加总时限和轮次截止检查；
+任务调度提交失败会持久标记 `dispatch_failed`；Worker 轮询异常会记录并退避；
+CommitWorker 将业务提交成功与账本同步失败分离，后者保留在 `ledger_error` 中；视觉服务和
+身体评价增加服务入口级超时。同步调用无法被 Python 线程强制杀死，因此仍需依赖底层客户端
+请求超时，长期运行继续观察阻塞调用和账本补偿。
+
 ## 图片生成模块（第一阶段地基）
 
 已新增 ComfyUI HTTP 客户端、图片生成服务和 `generate_visual` 工具，并接入主循环。
-工具只接收通用 prompt、尺寸和 seed；工作流模板、字段映射、ComfyUI 地址及输出目录
+工具只接收通用 prompt、尺寸、seed 和可选的 upscale；工作流模板、字段映射、ComfyUI 地址及输出目录
 属于 `config.py` 运行配置，不暴露给 Agent。没有工作流模板或映射时返回
 `configuration_missing`，不会伪造生成成功。生成成功还必须通过 ComfyUI history、输出文件
 存在性、输出目录边界和 SHA-256 校验。
 
-当前用户需要准备 ComfyUI API 格式 workflow JSON，并填写 `IMAGE_GENERATION_WORKFLOW_PATH`、
-`IMAGE_GENERATION_OUTPUT_ROOT`、`IMAGE_GENERATION_FIELD_MAP`。独立协议/服务测试已通过；
-真实 ComfyUI 生成、失败、超时和输出替换验收待工作流配置完成后进行。生成与再次视觉观察
-仍是两个独立事件，图片二进制不进入 checkpoint 或普通经历文本。
+当前已配置两份 ComfyUI API 工作流：`workflow_api.json` 为普通输出，
+`workflow_api_upscale.json` 为放大输出。`generate_visual` 默认使用普通工作流，只有
+`upscale=true` 才切换到放大工作流；两份工作流使用各自独立的字段映射，避免运行时删除节点或
+把一套工作流的节点编号错误套到另一套。输出通过 ComfyUI `/view` 读取后复制到
+`Card_slot/generated_images/`，该目录已加入 Git 忽略。
+2026-09-08 已完成一次真实生成：ComfyUI `0.18.2` 返回 `prompt_id`，项目成功取得 PNG 并
+完成 SHA-256 校验；同时修复了可选 seed 未提供时错误写入 `null` 的问题。生成与再次视觉观察
+仍是两个独立事件，图片二进制不进入 checkpoint 或普通经历文本。ComfyUI 未启动、任务失败、
+超时和输出替换仍需继续做故障验收。

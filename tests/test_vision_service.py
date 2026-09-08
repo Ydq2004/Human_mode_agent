@@ -1,4 +1,5 @@
 import unittest
+import time
 from pathlib import Path
 import tempfile
 from core.vision_service import VisionService, llm_image_observer
@@ -38,6 +39,14 @@ class VisionServiceTests(unittest.TestCase):
         self.assertEqual(result["visible_text"], [])
         self.assertEqual(len(llm.messages), 1)
         self.assertEqual(llm.messages[0].content[1]["type"], "image_url")
+
+    def test_service_timeout_is_explicit(self):
+        def slow_observer(path, focus):
+            time.sleep(0.05)
+            return {"observations": ["late"]}
+
+        result = VisionService(slow_observer, timeout_seconds=0.001).describe("x.png")
+        self.assertEqual(result["status"], "timeout")
 
 
 if __name__ == "__main__":

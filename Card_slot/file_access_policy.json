@@ -1,6 +1,6 @@
 {
-  "read_roots": [".","C:\\Users\\21968\\Pictures\\Camera Roll","C:\\Users\\21968\\Desktop"],
-  "write_roots": ["docs", "tests"],
+  "read_roots": [".","C:\\Users\\21968\\Pictures\\Camera Roll","C:\\Users\\21968\\Desktop","E:\\ai\\ComfyUI-aki-v1.6\\ComfyUI-aki-v1.6\\ComfyUI\\output"],
+  "write_roots": ["docs", "tests","E:\\ai\\ComfyUI-aki-v1.6\\ComfyUI-aki-v1.6\\ComfyUI\\output"],
   "sensitive_patterns": [
     ".env",
     ".env.*",

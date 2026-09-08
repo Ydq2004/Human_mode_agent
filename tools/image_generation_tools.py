@@ -34,17 +34,19 @@ def generate_visual(
     width: int | None = None,
     height: int | None = None,
     seed: int | None = None,
+    upscale: bool = False,
 ) -> str:
     """根据文字描述生成一张图片，并返回真实任务状态和图片引用。
 
-    只填写画面描述及可选尺寸/种子；工具会使用固定的本地 ComfyUI 工作流。
+    只填写画面描述及可选尺寸/种子。默认生成普通图片；只有明确需要高分辨率时才将
+    ``upscale`` 设为 true，工具会切换到独立的放大工作流。
     返回 ``succeeded`` 才表示图片文件真实生成。生成图片和再次观察图片是两个
     独立动作，需要理解生成结果时再调用视觉观察工具。
     """
     service = _SERVICE.get()
     if service is None:
         return json.dumps({"operation": "generate_visual", "status": "unavailable", "reason": "当前没有图片生成服务上下文"}, ensure_ascii=False)
-    result = service.generate(prompt=prompt, negative_prompt=negative_prompt, width=width, height=height, seed=seed)
+    result = service.generate(prompt=prompt, negative_prompt=negative_prompt, width=width, height=height, seed=seed, upscale=upscale)
     return json.dumps({"operation": "generate_visual", **result}, ensure_ascii=False)
 
 

@@ -44,6 +44,26 @@ class CommitWorkerTests(unittest.TestCase):
         finally:
             worker.shutdown()
 
+    def test_ledger_failure_does_not_rewrite_successful_business_commit(self):
+        class FailingLedger:
+            def mark_commit_started(self, job_id):
+                pass
+
+            def mark_commit_terminal(self, job_id, **kwargs):
+                raise RuntimeError("ledger unavailable")
+
+        calls = []
+        worker = CommitWorker(lambda task: calls.append(task.job_id) or {"written": True}, ledger=FailingLedger())
+        try:
+            worker.submit(CommitTask("job-1", 1, "thread", {}))
+            result = worker.wait("job-1", 2)
+            self.assertEqual(result["status"], "committed")
+            self.assertEqual(result["result"], {"written": True})
+            self.assertIn("ledger unavailable", result["ledger_error"])
+            self.assertEqual(calls, ["job-1"])
+        finally:
+            worker.shutdown()
+
     def test_duplicate_job_id_is_idempotent(self):
         calls = []
         worker = CommitWorker(lambda task: calls.append(task.job_id) or {})

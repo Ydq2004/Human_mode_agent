@@ -23,6 +23,11 @@ class _FakeWorker:
         return True
 
 
+class _FailWorker:
+    def submit(self, task_id):
+        raise RuntimeError("worker closed")
+
+
 class _FakeLLM:
     def invoke(self, messages):
         class Response:
@@ -77,6 +82,23 @@ class BackgroundTaskToolTests(unittest.TestCase):
         result = run_code_review(task, _FakeLLM())
         self.assertEqual(result["result_format"], "json")
         self.assertEqual(result["audit"]["files_read"], 0)
+
+    def test_review_deadline_is_checked_before_model_call(self):
+        task = {
+            "request": {"focus": "检查", "timeout_seconds": 0.000001},
+            "scope": {"paths": [str(Path.cwd() / "tests" / "test_background_tasks.py")]},
+        }
+        with self.assertRaises(TimeoutError):
+            run_code_review(task, _FakeLLM())
+
+    def test_review_dispatch_failure_is_persisted(self):
+        with background_task_context(worker=_FailWorker(), event_bus=None, llm=_FakeLLM(), persona_instance_id="p", thread_id="t"):
+            result = json.loads(start_code_review.invoke({"focus": "检查", "paths": [str(Path.cwd())]}))
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["error_code"], "dispatch_failed")
+        saved = store.get_task(result["task_id"])
+        self.assertEqual(saved["status"], "failed")
+        self.assertEqual(saved["error_code"], "dispatch_failed")
 
 
 if __name__ == "__main__":

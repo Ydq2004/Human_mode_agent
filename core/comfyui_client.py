@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+from urllib.parse import urlencode
 
 
 class ComfyUIError(RuntimeError):
@@ -58,7 +59,13 @@ class ComfyUIClient:
         try:
             response = self._opener(request, timeout=min(self.timeout_seconds, 30.0))
             raw = response.read()
-        except (HTTPError, URLError, OSError, TimeoutError) as exc:
+        except HTTPError as exc:
+            try:
+                detail = exc.read().decode("utf-8", errors="replace")[:2000]
+            except Exception:
+                detail = ""
+            raise ComfyUIError(f"ComfyUI 请求失败：HTTP {exc.code} {detail}") from exc
+        except (URLError, OSError, TimeoutError) as exc:
             raise ComfyUIError(f"ComfyUI 请求失败：{exc}") from exc
         try:
             value = json.loads(raw.decode("utf-8"))
@@ -67,6 +74,25 @@ class ComfyUIClient:
         if not isinstance(value, dict):
             raise ComfyUIError("ComfyUI 返回格式不是对象")
         return value
+
+    def get_output_bytes(self, *, filename: str, subfolder: str = "", output_type: str = "output") -> bytes:
+        """通过 ComfyUI /view 读取真实输出，不依赖 ComfyUI 的本地安装路径。"""
+        query = urlencode({"filename": str(filename), "subfolder": str(subfolder), "type": str(output_type)})
+        request = Request(f"{self.base_url}/view?{query}", method="GET")
+        try:
+            response = self._opener(request, timeout=min(self.timeout_seconds, 30.0))
+            data = response.read()
+        except HTTPError as exc:
+            try:
+                detail = exc.read().decode("utf-8", errors="replace")[:1000]
+            except Exception:
+                detail = ""
+            raise ComfyUIError(f"读取 ComfyUI 输出失败：HTTP {exc.code} {detail}") from exc
+        except (URLError, OSError, TimeoutError) as exc:
+            raise ComfyUIError(f"读取 ComfyUI 输出失败：{exc}") from exc
+        if not data:
+            raise ComfyUIError("ComfyUI 输出为空")
+        return data
 
     def submit(self, workflow: dict[str, Any], *, client_id: str) -> ComfyUIJob:
         if not isinstance(workflow, dict) or not workflow:

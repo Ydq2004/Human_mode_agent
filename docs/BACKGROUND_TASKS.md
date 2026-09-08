@@ -26,15 +26,19 @@ queued/running -> cancel_requested -> cancelled
 
 - `consult_advanced_model`：同步、只读、单轮有调用次数上限，直接返回高级模型的分析、
   假设、建议和不确定性。
-- `start_code_review`：异步创建 `code_review` 任务，立即返回 `task_id`。审核器只能
+- `start_code_review`：异步创建 `code_review` 任务，立即返回 `task_id`。任务带有统一总时限，
+  审核器在每轮模型交互和工具调用前检查截止时间；审核器只能
   使用任务范围与全局读取白名单交集中的 `review_list_directory`、`review_read_file`，
   不能写文件、执行命令或修改数据库。完成后使用 `get_background_task_status` 读取报告。
 
 辅助工具：`list_background_tasks`、`cancel_background_task`。
 
+任务提交失败时，已写入账本的任务会被标记为 `failed`，错误码为 `dispatch_failed`，不会遗留为无法执行的 `queued` 任务。Worker 轮询异常会记录日志并采用退避，恢复正常后自动恢复默认轮询间隔。Python 无法强制终止已经阻塞的同步线程；服务级和客户端级超时共同限制等待时间。
+
 模型地址和模型名由 `config.py` 的 `ADVANCED_LLM_CONFIG` 提供，密钥只从其中
-`api_key_env` 指定的环境变量读取。当前 `base_url` 仍为空，因此真实高级模型调用会明确
-返回 `unavailable`，但不会影响主 Agent 启动；接入具体供应商后再做真实咨询和长审核验收。
+`api_key_env` 指定的环境变量读取。当前配置已经填写供应商地址，但是否可用仍取决于密钥、
+模型路由和中转站；缺少密钥时会明确返回 `unavailable`，不会影响主 Agent 启动。真实咨询
+和长审核仍需继续做供应商环境验收。
 
 ## 通知语义
 

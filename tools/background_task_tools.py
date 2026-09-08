@@ -14,7 +14,7 @@ from typing import Any, Iterator
 
 from langchain_core.tools import tool
 
-from config import ADVANCED_CONSULT_MAX_CALLS_PER_TURN, REVIEW_MAX_FILES
+from config import ADVANCED_CONSULT_MAX_CALLS_PER_TURN, BACKGROUND_TASK_REVIEW_TIMEOUT_SECONDS, REVIEW_MAX_FILES
 from memory import background_task_store as store
 from tools.file_access_policy import check_path
 
@@ -95,7 +95,10 @@ def start_code_review(focus: str, paths: list[str], idempotency_key: str = "") -
         return _json({"operation": "start_code_review", "status": existing.get("status"), "task_id": existing.get("task_id"), "task_type": existing.get("task_type"), "message": "已存在相同幂等键的审核任务"})
     task = store.create_task(
         task_type="code_review", execution_mode="async",
-        request={"focus": str(focus or "").strip() or "检查实现正确性、边界和测试覆盖"},
+        request={
+            "focus": str(focus or "").strip() or "检查实现正确性、边界和测试覆盖",
+            "timeout_seconds": BACKGROUND_TASK_REVIEW_TIMEOUT_SECONDS,
+        },
         scope={"paths": clean_paths},
         persona_instance_id=runtime.persona_instance_id,
         thread_id=runtime.thread_id,
@@ -103,7 +106,26 @@ def start_code_review(focus: str, paths: list[str], idempotency_key: str = "") -
         idempotency_key=key,
         max_attempts=2,
     )
-    runtime.worker.submit(task["task_id"])
+    try:
+        runtime.worker.submit(task["task_id"])
+    except Exception as exc:
+        # 任务已写入持久账本后，调度失败也必须留下可查询的终态，不能遗留 queued 僵尸任务。
+        try:
+            failed = store.transition_task(
+                task["task_id"], "failed", expected_status="queued",
+                error_code="dispatch_failed", error_message=str(exc)[:500],
+            )
+        except Exception as transition_exc:
+            return _json({
+                "operation": "start_code_review", "status": "failed",
+                "task_id": task["task_id"], "error_code": "dispatch_failed",
+                "reason": f"调度失败且状态更新失败：{transition_exc}",
+            })
+        return _json({
+            "operation": "start_code_review", "status": failed.get("status", "failed"),
+            "task_id": task["task_id"], "error_code": "dispatch_failed",
+            "reason": str(exc),
+        })
     return _json({"operation": "start_code_review", "status": task["status"], "task_id": task["task_id"], "task_type": task["task_type"], "message": "审核已进入后台；完成后可用 get_background_task_status 查询"})
 
 

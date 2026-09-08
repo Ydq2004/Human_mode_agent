@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+from time import monotonic
 from pathlib import Path
 from typing import Any
 
@@ -159,6 +160,8 @@ def run_code_review(task: dict[str, Any], llm) -> dict[str, Any]:
     request = task.get("request") or {}
     scope = task.get("scope") or {}
     context = ReviewReadContext(scope)
+    timeout_seconds = float((request.get("timeout_seconds") or 0))
+    deadline = monotonic() + timeout_seconds if timeout_seconds > 0 else None
     list_tool = StructuredTool.from_function(context.list_directory, name="review_list_directory", description="列出审核范围内的目录")
     read_tool = StructuredTool.from_function(context.read_file, name="review_read_file", description="读取审核范围内的 UTF-8 文本文件")
     model = llm.bind_tools([list_tool, read_tool]) if hasattr(llm, "bind_tools") else llm
@@ -174,6 +177,8 @@ def run_code_review(task: dict[str, Any], llm) -> dict[str, Any]:
         )),
     ]
     for _ in range(REVIEW_MAX_ROUNDS):
+        if deadline is not None and monotonic() >= deadline:
+            raise TimeoutError(f"审核任务超过 {timeout_seconds:g} 秒总时限")
         response = model.invoke(messages)
         calls = getattr(response, "tool_calls", None) or []
         if not calls:
@@ -184,6 +189,8 @@ def run_code_review(task: dict[str, Any], llm) -> dict[str, Any]:
             return parsed
         messages.append(response)
         for call in calls[:REVIEW_MAX_TOOL_CALLS]:
+            if deadline is not None and monotonic() >= deadline:
+                raise TimeoutError(f"审核任务超过 {timeout_seconds:g} 秒总时限")
             name = str(call.get("name") or "")
             args = call.get("args") or {}
             if name == "review_list_directory":

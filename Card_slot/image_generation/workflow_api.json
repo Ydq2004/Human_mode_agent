@@ -58,6 +58,10 @@
       "samples": [
         "10",
         0
+      ],
+      "vae": [
+        "12",
+        2
       ]
     },
     "class_type": "VAEDecode",

@@ -84,6 +84,25 @@ VISION_LLM_CONFIG = {
     "api_key_env": "TENG_GEMINI_API_KEY",
 }
 
+# ComfyUI 图片生成（框架层运行配置）。工作流模板和输出目录不放进角色卡，
+# Agent 只能提交通用生成参数，不能修改 ComfyUI 节点、模型名或连接关系。
+COMFYUI_BASE_URL = "http://127.0.0.1:8188"
+IMAGE_GENERATION_WORKFLOW_PATH = PROJECT_ROOT / "Card_slot" / "image_generation" / "workflow_api.json"
+IMAGE_GENERATION_OUTPUT_ROOT = PROJECT_ROOT / "Card_slot" / "generated_images"
+IMAGE_GENERATION_TIMEOUT_SECONDS = 300.0
+IMAGE_GENERATION_POLL_INTERVAL_SECONDS = 1.0
+IMAGE_GENERATION_MAX_PROMPT_CHARS = 8000
+IMAGE_GENERATION_MAX_WIDTH = 2048
+IMAGE_GENERATION_MAX_HEIGHT = 2048
+# 下载工作流后只需填写对应节点和 input 名称；空映射会安全返回配置缺失。
+IMAGE_GENERATION_FIELD_MAP = {
+    "positive_prompt": {"node_id": "", "input": ""},
+    "negative_prompt": {"node_id": "", "input": ""},
+    "width": {"node_id": "", "input": ""},
+    "height": {"node_id": "", "input": ""},
+    "seed": {"node_id": "", "input": ""},
+}
+
 # 高级模型咨询与代码审核使用独立配置；缺少密钥时这两个可选能力保持不可用，
 # 不影响主 Agent 启动。审核默认只读，不允许调用本地写入或执行命令。
 ADVANCED_LLM_TIMEOUT_SECONDS = 120.0

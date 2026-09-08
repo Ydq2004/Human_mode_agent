@@ -66,6 +66,7 @@ from tools.file_tools import read_file, list_directory, write_file, apply_patch
 from tools.file_access_policy import load_policy
 from tools.somatic_tools import somatic_action, somatic_tool_context
 from tools.vision_tools import vision_describe_image, vision_tool_context
+from tools.image_generation_tools import generate_visual, image_generation_context
 from tools.background_task_tools import (
     background_task_context,
     cancel_background_task,
@@ -84,6 +85,7 @@ from core.somatic_simulation import (
 from core.background_task_events import BackgroundTaskEventBus
 from core.background_task_worker import BackgroundTaskWorker
 from core.advanced_model_service import create_advanced_llm, run_code_review
+from core.image_generation_service import ImageGenerationService
 from config import BACKGROUND_TASK_STALE_MINUTES
 
 
@@ -655,6 +657,7 @@ def process_perception_event(
     background_task_event_bus: BackgroundTaskEventBus | None = None,
     advanced_llm=None,
     persona_instance_id: str | None = None,
+    image_generation_service: ImageGenerationService | None = None,
 ) -> dict:
     """
     处理一个感知事件，返回本轮上下文和 ExperienceSlice。
@@ -745,7 +748,11 @@ def process_perception_event(
             )
             if background_task_worker is not None else nullcontext()
         )
-        with recall_call_budget(), somatic_context_manager, vision_context_manager, background_context_manager:
+        image_context_manager = (
+            image_generation_context(image_generation_service)
+            if image_generation_service is not None else nullcontext()
+        )
+        with recall_call_budget(), somatic_context_manager, vision_context_manager, background_context_manager, image_context_manager:
             result = agent.invoke(
                 {"messages": [model_message]},
                 config=agent_config,
@@ -1272,6 +1279,7 @@ def main():
         get_background_task_status,
         list_background_tasks,
         cancel_background_task,
+        generate_visual,
     ]
 
     factory_result = create_agent_from_persona(
@@ -1310,6 +1318,7 @@ def main():
     advanced_llm = create_advanced_llm()
     if advanced_llm is None:
         print("高级模型未配置：咨询和代码审核工具当前不可用")
+    image_generation_service = ImageGenerationService()
 
     # 角色卡只在实例首次启动时复制为出生人格；后续修改角色卡不会覆盖 seed。
     # 当前只建立人格演化的输入，不把人格快照注入主 Agent。
@@ -1478,6 +1487,7 @@ def main():
                     background_task_event_bus=background_event_bus,
                     advanced_llm=advanced_llm,
                     persona_instance_id=persona_instance_id,
+                    image_generation_service=image_generation_service,
                 )
 
                 experience_slice = result["experience_slice"]

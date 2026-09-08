@@ -133,4 +133,13 @@ AgentAction → tool result / observation → ExperienceSlice
 
 ## 9. 当前状态
 
-本文件记录设计方向，当前尚未接入 ComfyUI，也未把图片生成工具注册到 Agent。视觉感知模块已经存在，但“看见图片”和“生成图片”仍是两个独立能力；生成能力应在独立小闭环验证后再接入主流程。
+第一阶段代码地基已接入：`core/comfyui_client.py` 负责 `/prompt` 和 `/history` 协议，
+`core/image_generation_service.py` 负责参数校验、工作流字段白名单替换和输出文件哈希校验，
+`tools/image_generation_tools.py` 注册了通用 `generate_visual` 工具，主循环已绑定图片生成服务。
+没有工作流模板或字段映射时，工具返回 `configuration_missing`，不会伪造成功。
+
+当前仍需用户准备一个 ComfyUI API 格式工作流，并在 `config.py` 的
+`IMAGE_GENERATION_WORKFLOW_PATH`、`IMAGE_GENERATION_OUTPUT_ROOT` 和
+`IMAGE_GENERATION_FIELD_MAP` 中配置路径与字段映射。配置完成后再进行真实 ComfyUI 最小闭环
+验收。视觉感知模块已经存在，但“看见图片”和“生成图片”仍是两个独立能力；生图结果需要
+再次理解时，重新调用视觉工具。

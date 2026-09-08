@@ -48,10 +48,10 @@
 
     "model": {
       "provider": "中转站",
-      "model_name": "gemini-3.7-flash-high",
+      "model_name": "gemini-3.8-flash",
       "temperature": 0.8,
-      "base_url": "https://tntapi.com/v1",
-      "api_key_env": "TNT_GEMINI_API_KEY",
+      "base_url": "https://tengsuan.xiweinet.com",
+      "api_key_env": "TENG_GEMINI_API_KEY",
       "capabilities": {"vision": "native"}
     }
   }

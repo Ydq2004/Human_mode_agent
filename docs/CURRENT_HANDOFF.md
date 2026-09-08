@@ -1,6 +1,6 @@
 # CURRENT_HANDOFF
 
-更新时间：2026-09-07
+更新时间：2026-09-08
 
 用途：新会话开始时，先读取 `AGENTS.md`、`docs/Phase0_Memory_Architecture_Redesign.md` 和本文件，再继续工作。
 
@@ -586,3 +586,16 @@ Agent 主动观察的目录必须配置在 `Card_slot/file_access_policy.json` �
 尚未完成独立操作系统进程、实时打断阻塞式 CLI 输入、后台结果自动转为新的
 `PerceptionEvent/ExperienceSlice`；这些属于后续扩展。真实长时间运行需重点观察失败日志、
 重启恢复、重试次数和审核报告质量。
+
+## 图片生成模块（第一阶段地基）
+
+已新增 ComfyUI HTTP 客户端、图片生成服务和 `generate_visual` 工具，并接入主循环。
+工具只接收通用 prompt、尺寸和 seed；工作流模板、字段映射、ComfyUI 地址及输出目录
+属于 `config.py` 运行配置，不暴露给 Agent。没有工作流模板或映射时返回
+`configuration_missing`，不会伪造生成成功。生成成功还必须通过 ComfyUI history、输出文件
+存在性、输出目录边界和 SHA-256 校验。
+
+当前用户需要准备 ComfyUI API 格式 workflow JSON，并填写 `IMAGE_GENERATION_WORKFLOW_PATH`、
+`IMAGE_GENERATION_OUTPUT_ROOT`、`IMAGE_GENERATION_FIELD_MAP`。独立协议/服务测试已通过；
+真实 ComfyUI 生成、失败、超时和输出替换验收待工作流配置完成后进行。生成与再次视觉观察
+仍是两个独立事件，图片二进制不进入 checkpoint 或普通经历文本。

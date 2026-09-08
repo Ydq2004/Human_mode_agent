@@ -40,10 +40,11 @@ def create_advanced_llm():
         model=str(cfg.get("model_name") or "").strip(),
         api_key=api_key,
         base_url=str(cfg["base_url"]).strip(),
+        reasoning_effort="high",
         temperature=ADVANCED_LLM_TEMPERATURE,
         max_tokens=ADVANCED_LLM_MAX_TOKENS,
         timeout=ADVANCED_LLM_TIMEOUT_SECONDS,
-        max_retries=1,
+        max_retries=2,
     )
 
 

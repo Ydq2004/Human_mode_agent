@@ -48,10 +48,10 @@
 
     "model": {
       "provider": "中转站",
-      "model_name": "gemini-3.8-flash",
+      "model_name": "deepseek-v4.1-flash-expires-on-0910",
       "temperature": 0.8,
-      "base_url": "https://tengsuan.xiweinet.com",
-      "api_key_env": "TENG_GEMINI_API_KEY",
+      "base_url": "https://api.deepseek.com",
+      "api_key_env": "DEEPSEEK_API_KEY",
       "capabilities": {"vision": "native"}
     }
   }

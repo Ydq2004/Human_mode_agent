@@ -92,7 +92,12 @@ def render_event_times(request, handler):
     return handler(model_request)
 
 
-def create_agent_from_persona(tools: list = None, file_confirm=None):
+def create_agent_from_persona(
+    tools: list = None,
+    file_confirm=None,
+    *,
+    return_resources: bool = False,
+):
       """
       读取角色卡 → 初始化 LLM → 组装 Agent。
 
@@ -103,7 +108,10 @@ def create_agent_from_persona(tools: list = None, file_confirm=None):
       返回:
           (agent, config, persona, system_prompt,
            understanding_llm, retry_understanding_llm, appraisal_llm,
-           somatic_llm, vision_llm)
+          somatic_llm, vision_llm)
+          When ``return_resources`` is true, an additional final dictionary
+          contains the checkpoint connection so an application runtime can
+          close it before rebuilding a slot or thread.
       """
       if tools is None:
           tools = []
@@ -270,7 +278,7 @@ def create_agent_from_persona(tools: list = None, file_confirm=None):
       config={
           "configurable": {"thread_id": "default_user"}
          }
-      return (
+      result = (
           agent,
           config,
           persona,
@@ -281,3 +289,6 @@ def create_agent_from_persona(tools: list = None, file_confirm=None):
           somatic_llm,
           vision_llm,
       )
+      if return_resources:
+          return (*result, {"checkpoint_connection": conn})
+      return result

@@ -4,19 +4,30 @@
 这里只保存所有角色共用的路径、模型调用、检索、情绪和后台队列参数。
 """
 
+import json
 import os
+import shlex
 from pathlib import Path
+
+from core.card_slot_manager import (
+    DEFAULT_REGISTRY_PATH,
+    resolve_active_slot_path,
+)
 
 
 # ========== 项目路径 ==========
-# 角色卡是可替换的；当前实例数据统一放在 Card_slot/memory_db 中。
+# 角色卡是可替换的；当前实例数据统一放在活动槽位的 memory_db 中。
 PROJECT_ROOT = Path(__file__).parent
-PERSONA_CONFIG_PATH = PROJECT_ROOT / "Card_slot" / "persona_config.json"
-CHROMA_PERSIST_DIR = str(PROJECT_ROOT / "Card_slot" / "memory_db" / "chroma_db")
-SQLITE_DB_PATH = str(PROJECT_ROOT / "Card_slot" / "memory_db" / "sql_db.db")
-CHECKPOINT_DB_PATH = str(PROJECT_ROOT / "Card_slot" / "memory_db" / "checkpoint.db")
+# Card_slot 是默认实例。桌面设置切换的是完整槽位目录，而不是只换一张
+# persona_config.json。路径在进程启动时解析，运行中的 Agent 不会半途切换
+# 到另一套 SQLite/Chroma/checkpoint。
+CARD_SLOT_ROOT = resolve_active_slot_path(registry_path=DEFAULT_REGISTRY_PATH)
+PERSONA_CONFIG_PATH = CARD_SLOT_ROOT / "persona_config.json"
+CHROMA_PERSIST_DIR = str(CARD_SLOT_ROOT / "memory_db" / "chroma_db")
+SQLITE_DB_PATH = str(CARD_SLOT_ROOT / "memory_db" / "sql_db.db")
+CHECKPOINT_DB_PATH = str(CARD_SLOT_ROOT / "memory_db" / "checkpoint.db")
 # 文件工具权限是当前实例的运行配置，不放进角色卡。
-FILE_ACCESS_POLICY_PATH = PROJECT_ROOT / "Card_slot" / "file_access_policy.json"
+FILE_ACCESS_POLICY_PATH = CARD_SLOT_ROOT / "file_access_policy.json"
 
 
 # ========== LLM 默认值与网络容错 ==========
@@ -88,9 +99,37 @@ VISION_LLM_CONFIG = {
 # ComfyUI 图片生成（框架层运行配置）。工作流模板和输出目录不放进角色卡，
 # Agent 只能提交通用生成参数，不能修改 ComfyUI 节点、模型名或连接关系。
 COMFYUI_BASE_URL = "http://127.0.0.1:8188"
-IMAGE_GENERATION_WORKFLOW_PATH = PROJECT_ROOT / "Card_slot" / "image_generation" / "workflow_api.json"
-IMAGE_GENERATION_UPSCALE_WORKFLOW_PATH = PROJECT_ROOT / "Card_slot" / "image_generation" / "workflow_api_upscale.json"
-IMAGE_GENERATION_OUTPUT_ROOT = PROJECT_ROOT / "Card_slot" / "generated_images"
+# ComfyUI 进程管理是可选的。留空 executable 时只检查现有服务，不会猜测
+# 用户本机的 Python/ComfyUI 路径，也不会因为找不到它而阻止文字聊天启动。
+COMFYUI_ENABLED = True
+COMFYUI_EXECUTABLE = os.environ.get("COMFYUI_EXECUTABLE", "").strip()
+COMFYUI_WORKDIR = os.environ.get("COMFYUI_WORKDIR", "").strip()
+_COMFYUI_ARGS_JSON = os.environ.get("COMFYUI_ARGS_JSON", "").strip()
+COMFYUI_CONFIG_ERROR = ""
+if _COMFYUI_ARGS_JSON:
+    try:
+        _parsed_comfyui_args = json.loads(_COMFYUI_ARGS_JSON)
+    except json.JSONDecodeError as exc:
+        COMFYUI_CONFIG_ERROR = f"COMFYUI_ARGS_JSON 无法解析：{exc}"
+        COMFYUI_ARGS = ()
+    else:
+        if not isinstance(_parsed_comfyui_args, list) or not all(
+            isinstance(item, str) for item in _parsed_comfyui_args
+        ):
+            COMFYUI_CONFIG_ERROR = "COMFYUI_ARGS_JSON 必须是字符串数组"
+            COMFYUI_ARGS = ()
+        else:
+            COMFYUI_ARGS = tuple(_parsed_comfyui_args)
+else:
+    COMFYUI_ARGS = tuple(shlex.split(os.environ.get("COMFYUI_ARGS", "")))
+COMFYUI_STARTUP_TIMEOUT_SECONDS = 120.0
+COMFYUI_HEALTHCHECK_TIMEOUT_SECONDS = 2.0
+COMFYUI_POLL_INTERVAL_SECONDS = 0.5
+COMFYUI_STOP_ON_APP_EXIT = False
+COMFYUI_LOG_ROOT = CARD_SLOT_ROOT / "runtime_logs"
+IMAGE_GENERATION_WORKFLOW_PATH = CARD_SLOT_ROOT / "image_generation" / "workflow_api.json"
+IMAGE_GENERATION_UPSCALE_WORKFLOW_PATH = CARD_SLOT_ROOT / "image_generation" / "workflow_api_upscale.json"
+IMAGE_GENERATION_OUTPUT_ROOT = CARD_SLOT_ROOT / "generated_images"
 IMAGE_GENERATION_TIMEOUT_SECONDS = 300.0
 IMAGE_GENERATION_POLL_INTERVAL_SECONDS = 1.0
 IMAGE_GENERATION_MAX_PROMPT_CHARS = 8000

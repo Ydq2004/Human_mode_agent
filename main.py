@@ -10,12 +10,14 @@ CLI 只是输入适配器：
 import json
 from copy import deepcopy
 from contextlib import nullcontext
+from pathlib import Path
 from textwrap import indent
 from time import perf_counter
 
 from config import (
     COMMIT_RECOVERY_MAX_AGE_HOURS,
     DEFAULT_THREAD_ID,
+    IMAGE_GENERATION_OUTPUT_ROOT,
     MAX_RECENT_TURN,
 )
 
@@ -467,6 +469,53 @@ def _extract_tool_interactions(
 
     return actions, observations
 
+
+def _extract_media_artifacts(messages: list) -> list[dict]:
+    """提取 UI 可展示的受控媒体引用，不暴露任意本地路径。
+
+    工具结果仍完整保存在 ExperienceSlice；这里仅把生图服务已经校验过、
+    位于当前槽位 generated_images 目录内的图片转换成前端可用元数据。
+    """
+    output_root = Path(IMAGE_GENERATION_OUTPUT_ROOT).resolve(strict=False)
+    artifacts: list[dict] = []
+    seen: set[str] = set()
+    for message in list(messages or []):
+        if str(getattr(message, "name", "") or "") != "generate_visual":
+            continue
+        content = getattr(message, "content", "")
+        if isinstance(content, str):
+            try:
+                payload = json.loads(content)
+            except (TypeError, json.JSONDecodeError):
+                continue
+        else:
+            payload = content
+        if not isinstance(payload, dict) or payload.get("status") != "succeeded":
+            continue
+        image = payload.get("image")
+        if not isinstance(image, dict):
+            continue
+        raw_path = str(image.get("path") or "").strip()
+        if not raw_path:
+            continue
+        path = Path(raw_path).resolve(strict=False)
+        try:
+            path.relative_to(output_root)
+        except ValueError:
+            continue
+        if not path.is_file() or str(path) in seen:
+            continue
+        seen.add(str(path))
+        artifacts.append({
+            "kind": "image",
+            "filename": path.name,
+            "mime_type": str(image.get("mime_type") or "image/png"),
+            "size_bytes": int(image.get("size_bytes") or path.stat().st_size),
+            "sha256": str(image.get("sha256") or ""),
+            "prompt_id": str(payload.get("prompt_id") or image.get("prompt_id") or ""),
+        })
+    return artifacts
+
 def _build_perception_frame(
     event: PerceptionEvent,
     thread_id: str,
@@ -787,6 +836,7 @@ def process_perception_event(
         result.get("messages", []),
         current_event_id=event.event_id,
     )
+    media_artifacts = _extract_media_artifacts(result.get("messages", []))
     somatic_actions, somatic_observations = _records_from_somatic_outcomes(
         somatic_outcomes,
         triggered_by_event=event.event_id,
@@ -861,6 +911,8 @@ def process_perception_event(
         "timings": timings,
         # Persona 是 appraisal 的独立输入，不写进 ExperienceSlice 经历事实。
         "persona_context": dict(frame.persona_context),
+        # 只返回已通过输出目录校验的媒体元数据；绝对路径不会进入 UI 契约。
+        "media_artifacts": media_artifacts,
     }
 
 

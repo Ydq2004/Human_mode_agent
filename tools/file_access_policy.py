@@ -67,6 +67,9 @@ def load_policy(path: str | Path | None = None) -> dict[str, Any]:
         for value in values:
             root = Path(value)
             if not root.is_absolute():
+                # 保持现有策略兼容：相对白名单以项目根目录解释。
+                # 未来若需要槽位内专属目录，应在策略中显式声明路径基准，
+                # 不能因为切换实例而悄悄改变旧配置的含义。
                 root = PROJECT_ROOT / root
             result.append(root.resolve(strict=False))
         return result

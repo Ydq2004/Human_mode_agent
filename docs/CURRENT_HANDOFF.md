@@ -610,3 +610,34 @@ CommitWorker 将业务提交成功与账本同步失败分离，后者保留在 
 完成 SHA-256 校验；同时修复了可选 seed 未提供时错误写入 `null` 的问题。生成与再次视觉观察
 仍是两个独立事件，图片二进制不进入 checkpoint 或普通经历文本。ComfyUI 未启动、任务失败、
 超时和输出替换仍需继续做故障验收。
+
+## 桌面应用与角色实例槽位（2026-09-09，第一步）
+
+桌面化需求和角色切换方案记录在 `docs/DESKTOP_APPLICATION.md`。已新增
+`core/card_slot_manager.py`：现有 `Card_slot` 作为受保护的 `default` 槽位，新增槽位只复制
+角色配置与图片工作流，不复制 memory_db、checkpoint 或生成结果；移除槽位默认只从注册表移除，
+保留原目录。注册表位于项目外部的 `.human_mode/card_slots.json`，避免切换实例时把槽位目录
+本身当成全局配置。`config.py` 会在进程启动时解析活动槽位，并让 SQLite、Chroma、checkpoint、
+文件策略和图片输出路径整体跟随该槽位。
+
+`thread_id` 仍是槽位内的长期对话线程标识，只应在未来设置页修改；修改必须在当前回合和后台任务
+安全收尾后重建运行时，不能在一次模型调用中途更换 SQLite/checkpoint。当前只完成槽位管理地基，
+已开始新增 `app/runtime.py` 的第一版 `ApplicationRuntime`：按槽位和 thread_id 封装单事件串行、
+ExperienceSlice 历史读取、图片/文本提交与 worker 关闭顺序；同时新增 `app/server.py` 和静态
+Web MVP，提供本机聊天、历史、图片上传/受控展示、线程设置和槽位设置入口。当前 CLI 还未迁移
+到该运行时，非阻塞任务状态、配置热刷新和桌面打包仍待后续闭环验证。
+Web MVP 的设置页现已提供“退出应用”按钮，对应 `/api/shutdown`：请求先返回确认，随后关闭 HTTP
+服务并由 `ApplicationRuntime.shutdown()` 排空后台 worker。终端启动方式仍可使用 `Ctrl+C`。默认不
+关闭外部已有的 ComfyUI；是否关闭由应用自己启动的 ComfyUI 仍由 `COMFYUI_STOP_ON_APP_EXIT` 控制。
+应用启动增加项目级单实例锁，重复启动会被拒绝；设置页的角色槽位改为可直接登记已有角色文件夹，
+聊天历史加载后自动定位到最新消息，设置入口固定在窗口右上角。
+`process_perception_event` 现在额外返回只包含文件名、MIME、大小和哈希的受控媒体元数据；
+生成结果必须位于当前槽位 `generated_images` 目录，UI 不解析终端输出，也不接触绝对本地路径。
+同时新增 `core/comfyui_process.py`：启动时先复用健康的 ComfyUI，只有显式配置可执行文件时才
+启动外部进程，记录槽位日志并只按配置关闭本程序拥有的进程。文字聊天不依赖 ComfyUI。
+其可执行文件、工作目录和参数通过本机环境变量配置（支持 `COMFYUI_ARGS_JSON` 字符串数组），
+不把某台机器的 ComfyUI 路径写死进框架。
+
+新增桌面化定向测试：槽位管理 4 项、ApplicationRuntime 3 项、ComfyUI 监督器 4 项、媒体
+引用安全 1 项均通过。全量回归当前 305 项中 303 项通过、1 项跳过；剩余 2 项是已有 mood
+配置与旧测试期望不一致（`2 != 4`、`6.0 != 12.0`），与桌面化改动无关。

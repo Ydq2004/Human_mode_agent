@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Human-mode Agent</title>
+  <style>
+    :root { color-scheme: dark; font-family: "Segoe UI", "Microsoft YaHei", sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #15171b; color: #eceff4; min-height: 100vh; }
+    .app { display: grid; grid-template-columns: 250px minmax(0, 1fr); min-height: 100vh; }
+    aside { border-right: 1px solid #2d323a; padding: 22px 16px; background: #1b1e23; }
+    h1 { font-size: 18px; margin: 0 0 24px; }
+    h2 { font-size: 13px; color: #9ca5b3; text-transform: uppercase; letter-spacing: .08em; margin: 22px 0 8px; }
+    .slot { width: 100%; text-align: left; border: 1px solid #303640; background: transparent; color: inherit; padding: 10px; margin: 4px 0; border-radius: 6px; cursor: pointer; }
+    .slot.active { border-color: #79a8ff; background: #222c3c; }
+    .slot small { display: block; color: #9ca5b3; margin-top: 4px; overflow-wrap: anywhere; }
+    button { border: 1px solid #3c4654; border-radius: 6px; background: #242a33; color: inherit; padding: 8px 12px; cursor: pointer; }
+    button:hover { background: #303947; }
+    button.danger { border-color: #8f4f58; background: #3a252a; }
+    button.danger:hover { background: #512d34; }
+    #settings { position: fixed; top: 14px; right: 22px; z-index: 10; }
+    main { display: flex; flex-direction: column; min-width: 0; }
+    header { display: flex; justify-content: space-between; align-items: center; padding: 16px 24px; border-bottom: 1px solid #2d323a; }
+    #status { color: #9ca5b3; font-size: 13px; }
+    #messages { flex: 1; overflow: auto; padding: 24px max(20px, calc((100vw - 900px) / 2)); }
+    .message { max-width: 760px; margin: 0 auto 18px; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.6; }
+    .message.user { color: #b9d2ff; }
+    .message.agent { color: #f2f4f8; }
+    .label { font-size: 12px; color: #7f8997; margin-bottom: 3px; }
+    .media { max-width: 100%; max-height: 520px; border-radius: 6px; margin-top: 9px; border: 1px solid #3c4654; }
+    form { display: flex; gap: 8px; padding: 16px max(20px, calc((100vw - 900px) / 2)); border-top: 1px solid #2d323a; }
+    textarea { flex: 1; min-height: 48px; max-height: 180px; resize: vertical; border: 1px solid #3c4654; border-radius: 6px; background: #20242b; color: inherit; padding: 12px; font: inherit; }
+    input[type=file] { display: none; }
+    .tools { display: flex; gap: 8px; align-items: center; }
+    dialog { color: inherit; background: #1e2228; border: 1px solid #3c4654; border-radius: 8px; width: min(520px, 92vw); }
+    dialog::backdrop { background: #0009; }
+    .settings-row { display: flex; gap: 8px; margin: 12px 0; }
+    .settings-row input { flex: 1; min-width: 0; border: 1px solid #3c4654; border-radius: 6px; background: #20242b; color: inherit; padding: 9px; }
+    .muted { color: #9ca5b3; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside>
+      <h1>Human-mode Agent</h1>
+      <button id="settings">设置</button>
+      <h2>角色槽位</h2>
+      <div id="slots" class="muted">加载中...</div>
+    </aside>
+    <main>
+      <header><strong id="persona">加载中...</strong><span id="status"></span></header>
+      <section id="messages" aria-live="polite"></section>
+      <form id="composer">
+        <div class="tools"><label for="image"><button type="button">图片</button></label><input id="image" type="file" accept="image/png,image/jpeg,image/webp,image/gif"><button type="submit">发送</button></div>
+        <textarea id="content" placeholder="输入消息..." aria-label="消息"></textarea>
+      </form>
+    </main>
+  </div>
+  <dialog id="settingsDialog">
+    <form method="dialog" id="settingsForm">
+      <h2>运行设置</h2>
+      <div class="settings-row"><input id="thread" placeholder="长期对话 thread_id"><button id="saveThread" type="button">切换线程</button></div>
+      <div class="settings-row"><button id="reload" type="button">刷新角色配置</button></div>
+      <h2>角色槽位管理</h2>
+      <div class="settings-row"><input id="slotPath" placeholder="角色文件夹绝对路径"><button id="registerSlot" type="button">登记文件夹</button></div>
+      <div class="settings-row"><input id="newSlotId" placeholder="可选：槽位 ID"><input id="newSlotName" placeholder="可选：显示名称"></div>
+      <div class="settings-row"><input id="deleteSlotId" placeholder="要移除的槽位 ID"><button id="deleteSlot" type="button">移除</button></div>
+      <p class="muted">切换角色槽位会保存选择，关闭并重新打开后端才会载入新的数据库和 checkpoint。</p>
+      <div class="settings-row"><button id="shutdown" class="danger" type="button">退出应用</button></div>
+      <button type="submit">关闭</button>
+    </form>
+  </dialog>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const messages = $('messages');
+    function esc(text) { return String(text ?? ''); }
+    function mediaUrl(kind, filename) { return `/media/${kind}/${encodeURIComponent(filename)}`; }
+    function renderMessage(m) {
+      const el = document.createElement('article');
+      el.className = `message ${m.kind}`;
+      const label = document.createElement('div'); label.className = 'label'; label.textContent = m.kind === 'user' ? '我' : 'Agent';
+      const body = document.createElement('div'); body.textContent = esc(m.content);
+      el.append(label, body);
+      (m.media || []).forEach(item => {
+        const img = document.createElement('img');
+        img.className = 'media';
+        img.src = mediaUrl('generated', item.filename);
+        img.alt = 'Agent 生成的图片';
+        el.appendChild(img);
+      });
+      if (m.metadata?.path && m.modality === 'image') {
+        const img = document.createElement('img');
+        img.className = 'media';
+        img.src = mediaUrl('attachments', m.metadata.path.split(/[\\/]/).pop());
+        img.alt = '用户提交的图片';
+        el.appendChild(img);
+      }
+      messages.appendChild(el);
+    }
+    async function loadHistory() {
+      const data = await (await fetch('/api/history')).json();
+      messages.replaceChildren();
+      (data.messages || []).forEach(renderMessage);
+      messages.scrollTop = messages.scrollHeight;
+      const last = messages.lastElementChild;
+      if (last) last.scrollIntoView({block: 'end'});
+    }
+    async function loadStatus() {
+      const data = await (await fetch('/api/status')).json();
+      $('persona').textContent = data.persona || 'Agent';
+      $('status').textContent = `${data.thread_id} · ${data.status}`;
+      $('thread').value = data.thread_id || '';
+    }
+    async function loadSlots() {
+      const data = await (await fetch('/api/slots')).json();
+      const root = $('slots'); root.replaceChildren();
+      (data.slots || []).forEach(slot => {
+        const button = document.createElement('button'); button.className = `slot ${slot.slot_id === data.active_slot_id ? 'active' : ''}`;
+        const title = document.createElement('span'); title.textContent = esc(slot.name);
+        const id = document.createElement('small'); id.textContent = esc(slot.slot_id);
+        button.append(title, id);
+        button.onclick = async () => {
+          if (slot.slot_id === data.active_slot_id) return;
+          const response = await fetch('/api/slots/active', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({slot_id: slot.slot_id}) });
+          const result = await response.json();
+          alert(result.message || result.error || '操作完成');
+        };
+        root.appendChild(button);
+      });
+    }
+    $('composer').onsubmit = async (event) => {
+      event.preventDefault();
+      const text = $('content').value.trim();
+      const file = $('image').files[0];
+      if (!text && !file) return;
+      $('content').value = '';
+      let response;
+      if (file) {
+        const form = new FormData(); form.append('file', file);
+        response = await fetch('/api/image', {method:'POST', body:form});
+      } else {
+        response = await fetch('/api/message', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({content:text})});
+      }
+      const result = await response.json();
+      if (!response.ok) { alert(result.message || result.error || '本轮失败'); return; }
+      await loadHistory(); await loadStatus(); $('image').value = '';
+    };
+    $('settings').onclick = () => $('settingsDialog').showModal();
+    $('saveThread').onclick = async () => {
+      const response = await fetch('/api/settings/thread', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({thread_id:$('thread').value})});
+      const result = await response.json(); alert(result.message || result.error || '线程已切换'); if (response.ok) { await loadHistory(); await loadStatus(); }
+    };
+    $('reload').onclick = async () => { const response = await fetch('/api/settings/reload', {method:'POST'}); const result = await response.json(); alert(result.error || '配置已刷新'); if (response.ok) { await loadHistory(); await loadStatus(); } };
+    $('registerSlot').onclick = async () => {
+      const path = $('slotPath').value.trim();
+      if (!path) return;
+      const response = await fetch('/api/slots/register', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({path, slot_id:$('newSlotId').value, name:$('newSlotName').value})});
+      const result = await response.json(); alert(result.message || result.error || '角色文件夹已登记');
+      if (response.ok) { $('slotPath').value=''; $('newSlotId').value=''; $('newSlotName').value=''; await loadSlots(); }
+    };
+    $('deleteSlot').onclick = async () => {
+      const slotId = $('deleteSlotId').value.trim(); if (!slotId) return;
+      if (!confirm(`从列表移除槽位 ${slotId}？目录和历史数据会保留。`)) return;
+      const response = await fetch(`/api/slots/${encodeURIComponent(slotId)}`, {method:'DELETE'});
+      const result = await response.json(); alert(result.message || result.error || '槽位已移除'); if (response.ok) { $('deleteSlotId').value=''; await loadSlots(); }
+    };
+    $('shutdown').onclick = async () => {
+      if (!confirm('退出应用并关闭本机后台？当前正在处理的后台任务会先完成收尾。')) return;
+      $('shutdown').disabled = true;
+      $('shutdown').textContent = '正在关闭...';
+      try {
+        const response = await fetch('/api/shutdown', {method:'POST'});
+        const result = await response.json();
+        const main = document.createElement('main'); main.style.padding = '32px';
+        const heading = document.createElement('h1'); heading.textContent = '应用已请求关闭';
+        const message = document.createElement('p'); message.textContent = `${result.message || '本机后台正在停止。'} 可以关闭此页面。`;
+        main.append(heading, message); document.body.replaceChildren(main);
+      } catch (error) {
+        const main = document.createElement('main'); main.style.padding = '32px';
+        const heading = document.createElement('h1'); heading.textContent = '应用正在关闭';
+        const message = document.createElement('p'); message.textContent = '本机后台已停止响应，可以关闭此页面。';
+        main.append(heading, message); document.body.replaceChildren(main);
+      }
+    };
+    Promise.all([loadHistory(), loadStatus(), loadSlots()]).catch(err => alert(err));
+  </script>
+</body>
+</html>

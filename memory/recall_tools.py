@@ -20,7 +20,7 @@ from memory.experience_store import (
     search_experience_slices,
 )
 from memory.retrieval_engine import retrieve_memories
-from memory.sql_store import get_memory_time_coverage
+from memory.sql_store import get_memory_time_coverage, search_by_name_or_alias
 from memory.store_manager import read_entity
 from memory.experience_summary_store import list_summaries
 from config import RECALL_MAX_CALLS_PER_TURN
@@ -224,6 +224,7 @@ def recall_memory(
     object: str = "",
     limit: int = 10,
     include_related: bool = True,
+    search_mode: str = "vector_related",
 ) -> str:
     """只读查询长期认知、情景摘要和具体经历。
 
@@ -267,10 +268,20 @@ def recall_memory(
     subject = str(subject or "").strip()
     object_value = str(object or "").strip()
 
+    if search_mode not in {"vector", "vector_related", "exact_name"}:
+        return json.dumps({"error": "search_mode 必须是 vector、vector_related 或 exact_name"}, ensure_ascii=False)
+
     memories = []
     if concept_id:
         entity = read_entity(concept_id)
         if entity is not None:
+            memories.append(_entity_to_dict(entity))
+    elif search_mode == "exact_name" and query:
+        seen = set()
+        for entity in search_by_name_or_alias(query):
+            if entity.concept_id in seen:
+                continue
+            seen.add(entity.concept_id)
             memories.append(_entity_to_dict(entity))
     elif query or memory_type or subject or object_value:
         filters = {
@@ -286,7 +297,8 @@ def recall_memory(
             query=query,
             filters=filters,
             top_k=limit,
-            include_related=include_related,
+            include_related=search_mode == "vector_related" and include_related,
+            mode="vector",
         )
         memories = [
             {

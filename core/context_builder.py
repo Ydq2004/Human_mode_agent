@@ -195,7 +195,8 @@ def _activate_from_cues(
                 query,
                 filters=filters,
                 top_k=top_k,
-                include_related=True,
+                include_related=False,
+                mode="vector",
             )
         )
 

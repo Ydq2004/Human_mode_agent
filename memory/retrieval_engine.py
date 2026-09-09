@@ -394,6 +394,7 @@ def retrieve_memories(
     filters: dict | None = None,
     top_k: int = 10,
     include_related: bool = True,
+    mode: str = "hybrid",
 ) ->  RetrievalResult:
     """
     Phase 0 混合检索引擎：结构化 + 向量召回版。
@@ -417,6 +418,8 @@ def retrieve_memories(
 
     include_related=False 可供调用方关闭一跳关系扩展。
     """
+    if mode not in {"hybrid", "vector"}:
+        raise ValueError("mode 必须是 hybrid 或 vector")
     filters = filters or {}
     queries = _normalize_queries(query)
 
@@ -430,12 +433,13 @@ def retrieve_memories(
    
     # 每个 query 单独跑 alias 和 vector 路径，避免多个语义主题互相稀释。
     for one_query in queries:
-        # 路径 1：名称 / alias 精确匹配。
-        for token in _query_tokens(one_query):
-            for entity in search_by_name_or_alias(token):
-                if not _matches_memory_type_filter(entity, filters):
-                    continue
-                _add_candidate(candidates, entity, "alias")
+        # hybrid 兼容旧调用；自动唤起使用 vector，避免把精确读取混入语义候选。
+        if mode == "hybrid":
+            for token in _query_tokens(one_query):
+                for entity in search_by_name_or_alias(token):
+                    if not _matches_memory_type_filter(entity, filters):
+                        continue
+                    _add_candidate(candidates, entity, "alias")
 
         # 路径 3：向量语义召回。
         # 向量结果先经过距离分层，只有 accepted 才进入主结果。
@@ -475,7 +479,7 @@ def retrieve_memories(
     # 路径 2：结构化 subject/object 匹配。
     # 同一份 filters 中的字段必须全部满足；不同 cue 仍由 context_builder
     # 分别检索后合并。这样过滤字段越多，结果只会收窄，不会反向扩大。
-    if filter_subject or filter_object:
+    if mode == "hybrid" and (filter_subject or filter_object):
         for entity in _candidate_pool(memory_type):
             if not _matches_structured_filters(entity, filters):
                 continue

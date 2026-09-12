@@ -121,9 +121,10 @@ def _choose_best_match(candidate: dict, entities: list[MemoryEntity]) -> Resolve
     """
     从候选实体中选择身份判断。
 
-    same 是确定结果，可以直接返回。
-    ambiguous 不是确定结果，所以保留候选集合交给 LLM judge。
+    只有唯一的 same 候选才是确定结果。
+    多个 same 仍然表示身份冲突，必须保留候选集合交给 LLM judge。
     """
+    same_results = []
     ambiguous_results = []
 
     for entity in entities:
@@ -132,16 +133,23 @@ def _choose_best_match(candidate: dict, entities: list[MemoryEntity]) -> Resolve
             continue
 
         if result.decision == "same":
-            return result
+            same_results.append(result)
+            continue
 
         if result.decision == "ambiguous":
             ambiguous_results.append(result)
 
-    if ambiguous_results:
+    # 候选顺序不是语义依据。多个“完全匹配”不能因数据库返回顺序
+    # 而任意选中一条，否则会把身份不确定性伪装成确定结果。
+    if len(same_results) == 1 and not ambiguous_results:
+        return same_results[0]
+
+    if same_results or ambiguous_results:
+        all_results = same_results + ambiguous_results
         candidate_ids = []
         reasons = []
 
-        for item in ambiguous_results:
+        for item in all_results:
             if item.target_concept_id and item.target_concept_id not in candidate_ids:
                 candidate_ids.append(item.target_concept_id)
                 reasons.append(f"{item.target_concept_id}: {item.reason}")
@@ -149,7 +157,7 @@ def _choose_best_match(candidate: dict, entities: list[MemoryEntity]) -> Resolve
         return ResolveResult(
             decision="ambiguous",
             target_concept_id=None,
-            confidence=max(item.confidence for item in ambiguous_results),
+            confidence=max(item.confidence for item in all_results),
             reason="; ".join(reasons),
             candidate_concept_ids=candidate_ids,
         )

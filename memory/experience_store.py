@@ -98,6 +98,11 @@ def ensure_experience_store() -> None:
             "CREATE INDEX IF NOT EXISTS idx_experience_thread_time "
             "ON experience_slices (thread_id, occurred_at, event_sequence)"
         )
+        # 同一线程内的事件序号必须唯一；数据库约束负责挡住并发分配冲突。
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_experience_thread_sequence "
+            "ON experience_slices (thread_id, event_sequence)"
+        )
 
 
 def get_next_event_sequence(thread_id: str) -> int:
@@ -205,6 +210,16 @@ def save_experience_slice(
                 ),
             )
         except sqlite3.IntegrityError as exc:
+            if thread_id is not None and event_sequence is not None:
+                conflict = conn.execute(
+                    "SELECT slice_id FROM experience_slices "
+                    "WHERE thread_id = ? AND event_sequence = ?",
+                    (thread_id, event_sequence),
+                ).fetchone()
+                if conflict is not None:
+                    raise ValueError(
+                        f"thread_id {thread_id} 的 event_sequence {event_sequence} 已被占用"
+                    ) from exc
             # event_id 的唯一约束能阻止同一个原始事件被包装成两条切片。
             raise ValueError(
                 f"event_id {event.event_id} 已经属于另一条 ExperienceSlice"

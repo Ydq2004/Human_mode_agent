@@ -255,6 +255,16 @@ def _build_capability_snapshot(tools: list | None, persona: dict | None = None) 
     snapshot = {
         "owner": "agent",
         "registered_tools": tool_names,
+        # 能力快照不仅列出工具名称，也明确工具的边界，供感知理解和审计使用。
+        # 这里是框架层事实，不代表角色一定会主动调用某个工具。
+        "tool_capabilities": {
+            name: {
+                "available": True,
+                "execution": "local",
+                "side_effect": name in {"write_file", "apply_patch", "generate_visual", "somatic_action"},
+            }
+            for name in tool_names
+        },
 
         # 角色世界中的具身行动与现实设备副作用是两个通道。
         "embodied_action": {

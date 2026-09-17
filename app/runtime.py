@@ -79,6 +79,11 @@ from tools.background_task_tools import (
 )
 from tools.file_tools import apply_patch, list_directory, read_file, write_file
 from tools.image_generation_tools import generate_visual
+from tools.environment_tools import get_current_time
+from tools.calculation_tools import calculate
+from tools.search_tools import search_text
+from tools.metadata_tools import read_image_metadata
+from tools.process_tools import execute_command, run_command_task
 from tools.somatic_tools import somatic_action
 from tools.vision_tools import vision_describe_image
 
@@ -134,6 +139,11 @@ class ApplicationRuntime:
             list_background_tasks,
             cancel_background_task,
             generate_visual,
+            get_current_time,
+            calculate,
+            search_text,
+            read_image_metadata,
+            execute_command,
         ]
 
     def _initialise(self) -> None:
@@ -232,6 +242,7 @@ class ApplicationRuntime:
                 "code_review",
                 lambda task: run_code_review(task, self.advanced_llm),
             )
+        self.background_worker.register("command", run_command_task)
         self.background_worker.submit_due(limit=100)
 
         ensure_somatic_store()

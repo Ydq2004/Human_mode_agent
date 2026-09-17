@@ -46,6 +46,27 @@ def _json(payload: dict[str, Any]) -> str:
     return json.dumps(payload, ensure_ascii=False)
 
 
+def submit_background_task(*, task_type: str, request: dict[str, Any], scope: dict[str, Any] | None = None,
+                           idempotency_key: str = "", max_attempts: int = 1) -> dict[str, Any]:
+    """供其它耗时工具复用的任务提交入口；权限仍由具体工具先校验。"""
+    runtime = _RUNTIME.get()
+    if runtime is None or runtime.worker is None:
+        return {"status": "unavailable", "reason": "当前没有后台任务上下文"}
+    key = str(idempotency_key or "").strip() or None
+    existing = store.get_task_by_idempotency_key(key) if key else None
+    if existing is not None:
+        return {"status": existing.get("status"), "task_id": existing.get("task_id"), "existing": True}
+    task = store.create_task(task_type=task_type, execution_mode="async", request=request, scope=scope,
+                             persona_instance_id=runtime.persona_instance_id, thread_id=runtime.thread_id,
+                             source_event_id=runtime.source_event_id, idempotency_key=key, max_attempts=max_attempts)
+    try:
+        runtime.worker.submit(task["task_id"])
+    except Exception as exc:
+        store.transition_task(task["task_id"], "failed", expected_status="queued", error_code="dispatch_failed", error_message=str(exc)[:500])
+        return {"status": "failed", "task_id": task["task_id"], "error": str(exc)}
+    return {"status": task["status"], "task_id": task["task_id"]}
+
+
 @tool
 def consult_advanced_model(question: str, context: str = "") -> str:
     """就当前问题向高级模型请求一次同步建议。
@@ -170,4 +191,4 @@ def cancel_background_task(task_id: str) -> str:
     return _json({"operation": "cancel_background_task", "status": updated.get("status") if updated else "not_found", "task_id": task["task_id"]})
 
 
-__all__ = ["background_task_context", "consult_advanced_model", "start_code_review", "get_background_task_status", "list_background_tasks", "cancel_background_task"]
+__all__ = ["background_task_context", "submit_background_task", "consult_advanced_model", "start_code_review", "get_background_task_status", "list_background_tasks", "cancel_background_task"]

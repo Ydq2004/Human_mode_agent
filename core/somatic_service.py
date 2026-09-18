@@ -43,6 +43,8 @@ class SomaticOutcome:
     action_description: str = ""
     error: str = ""
     duplicate: bool = False
+    # 领域扩展产出的结构化里程碑；只描述发生过什么，不含表达文本。
+    extension_events: tuple[Mapping[str, Any], ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -59,6 +61,7 @@ class SomaticOutcome:
             "action_description": self.action_description,
             "error": self.error,
             "duplicate": self.duplicate,
+            "extension_events": [dict(item) for item in self.extension_events],
         }
 
 
@@ -149,6 +152,11 @@ class SomaticService:
             interoception_description=str(result.get("interoception_description") or ""),
             action_description=str(result.get("action_description") or ""),
             duplicate=True,
+            extension_events=tuple(
+                dict(item)
+                for item in (result.get("extension_events") or [])
+                if isinstance(item, Mapping)
+            ),
         )
 
     def process(
@@ -235,6 +243,7 @@ class SomaticService:
                 state_before=current_state,
                 state_after=current_state,
                 revision=stored_current.revision,
+                error=decision.reason,
             )
 
         appraisal = appraise_somatic_event(
@@ -340,6 +349,9 @@ class SomaticService:
             interoception_description=appraisal.interoception_description,
             action_description=result_payload["action_description"],
             duplicate=committed.duplicate,
+            extension_events=tuple(
+                dict(item) for item in result_payload["extension_events"]
+            ),
         )
 
 

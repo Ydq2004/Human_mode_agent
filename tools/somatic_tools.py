@@ -148,10 +148,14 @@ def somatic_action(
             "visible_reaction",
             "interoception_description",
             "action_description",
+            "reason",
             "error",
             "duplicate",
         )
     }
+    public_outcome["reason"] = str(
+        (full_payload["outcome"].get("decision") or {}).get("reason") or ""
+    )
     public_payload = {
         "operation": "somatic_action",
         "status": status,

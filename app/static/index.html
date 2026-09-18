@@ -8,8 +8,8 @@
     :root { color-scheme: dark; font-family: "Segoe UI", "Microsoft YaHei", sans-serif; }
     * { box-sizing: border-box; }
     body { margin: 0; background: #15171b; color: #eceff4; min-height: 100vh; }
-    .app { display: grid; grid-template-columns: 250px minmax(0, 1fr); min-height: 100vh; }
-    aside { border-right: 1px solid #2d323a; padding: 22px 16px; background: #1b1e23; }
+    .app { display: grid; grid-template-columns: minmax(0, 1fr); min-height: 100vh; }
+    aside { display: none; }
     h1 { font-size: 18px; margin: 0 0 24px; }
     h2 { font-size: 13px; color: #9ca5b3; text-transform: uppercase; letter-spacing: .08em; margin: 22px 0 8px; }
     .slot { width: 100%; text-align: left; border: 1px solid #303640; background: transparent; color: inherit; padding: 10px; margin: 4px 0; border-radius: 6px; cursor: pointer; }
@@ -19,10 +19,14 @@
     button:hover { background: #303947; }
     button.danger { border-color: #8f4f58; background: #3a252a; }
     button.danger:hover { background: #512d34; }
-    #settings { position: fixed; top: 14px; right: 22px; z-index: 10; }
+    .fixed-actions { position: fixed; top: 14px; right: 22px; z-index: 10; display: flex; gap: 8px; }
     main { display: flex; flex-direction: column; min-width: 0; }
     header { display: flex; justify-content: space-between; align-items: center; padding: 16px 24px; border-bottom: 1px solid #2d323a; }
     #status { color: #9ca5b3; font-size: 13px; }
+    #progress-bar { display: none; position: fixed; left: 50%; bottom: 92px; transform: translateX(-50%); z-index: 20; width: min(760px, calc(100% - 40px)); padding: 10px 14px; border: 1px solid #3d5f91; border-radius: 8px; background: #1d2a3d; color: #a9c9ff; font-size: 14px; box-shadow: 0 4px 18px #0008; }
+    #progress-bar.active { display: block; }
+    #progress-bar::before { content: '●'; display: inline-block; margin-right: 8px; color: #79a8ff; animation: pulse 1.2s ease-in-out infinite; }
+    @keyframes pulse { 50% { opacity: .35; } }
     #messages { flex: 1; overflow: auto; padding: 24px max(20px, calc((100vw - 900px) / 2)); }
     .message { max-width: 760px; margin: 0 auto 18px; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.6; }
     .message.user { color: #b9d2ff; }
@@ -44,29 +48,27 @@
   <div class="app">
     <aside>
       <h1>Human-mode Agent</h1>
-      <button id="settings">设置</button>
       <h2>角色槽位</h2>
       <div id="slots" class="muted">加载中...</div>
     </aside>
     <main>
       <header><strong id="persona">加载中...</strong><span id="status"></span></header>
+      <div id="progress-bar" role="status" aria-live="polite"><span id="progress"></span></div>
       <section id="messages" aria-live="polite"></section>
       <form id="composer">
-        <div class="tools"><label for="image"><button type="button">图片</button></label><input id="image" type="file" accept="image/png,image/jpeg,image/webp,image/gif"><button type="submit">发送</button></div>
+        <div class="tools"><button id="imageButton" type="button">选择图片</button><input id="image" type="file" accept="image/png,image/jpeg,image/webp,image/gif"><button type="submit">发送</button></div>
         <textarea id="content" placeholder="输入消息..." aria-label="消息"></textarea>
       </form>
     </main>
   </div>
+  <div class="fixed-actions"><button id="reload" type="button">刷新配置</button><button id="settings" type="button">设置</button></div>
   <dialog id="settingsDialog">
     <form method="dialog" id="settingsForm">
       <h2>运行设置</h2>
       <div class="settings-row"><input id="thread" placeholder="长期对话 thread_id"><button id="saveThread" type="button">切换线程</button></div>
-      <div class="settings-row"><button id="reload" type="button">刷新角色配置</button></div>
-      <h2>角色槽位管理</h2>
-      <div class="settings-row"><input id="slotPath" placeholder="角色文件夹绝对路径"><button id="registerSlot" type="button">登记文件夹</button></div>
-      <div class="settings-row"><input id="newSlotId" placeholder="可选：槽位 ID"><input id="newSlotName" placeholder="可选：显示名称"></div>
-      <div class="settings-row"><input id="deleteSlotId" placeholder="要移除的槽位 ID"><button id="deleteSlot" type="button">移除</button></div>
-      <p class="muted">切换角色槽位会保存选择，关闭并重新打开后端才会载入新的数据库和 checkpoint。</p>
+      <h2>角色卡</h2>
+      <div class="settings-row"><input id="slotPath" placeholder="尚未选择角色文件夹" readonly><button id="chooseSlotFolder" type="button">切换角色卡</button></div>
+      <p class="muted">点击“切换角色卡”后，在弹出的窗口选择包含 persona_config.json 的文件夹；保存后请手动重启后端。</p>
       <div class="settings-row"><button id="shutdown" class="danger" type="button">退出应用</button></div>
       <button type="submit">关闭</button>
     </form>
@@ -135,6 +137,9 @@
       const file = $('image').files[0];
       if (!text && !file) return;
       $('content').value = '';
+      $('progress').textContent = '消息已发送，正在感知事件…'; $('progress-bar').classList.add('active');
+      document.querySelector('button[type="submit"]').disabled = true;
+      $('content').disabled = true; $('imageButton').disabled = true; $('image').disabled = true;
       let response;
       if (file) {
         const form = new FormData(); form.append('file', file);
@@ -143,8 +148,23 @@
         response = await fetch('/api/message', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({content:text})});
       }
       const result = await response.json();
-      if (!response.ok) { alert(result.message || result.error || '本轮失败'); return; }
+      if (!response.ok) { alert(result.message || result.error || '本轮失败'); $('progress').textContent=''; $('progress-bar').classList.remove('active'); document.querySelector('button[type="submit"]').disabled=false; $('content').disabled=false; $('imageButton').disabled=false; $('image').disabled=false; return; }
+      let done = false;
+      while (!done) {
+        await new Promise(resolve => setTimeout(resolve, 400));
+        const state = await (await fetch(`/api/event/${encodeURIComponent(result.event_id)}`)).json();
+        const labels = {queued:'排队中…', perception:'正在感知事件…', understanding:'正在理解输入…', memory_activation:'正在唤起相关记忆…', agent:'Agent 正在生成回复…', tool:'正在调用工具…', experience:'正在保存本轮经历…', completed:'处理完成', failed:'处理失败'};
+        $('progress').textContent = labels[state.stage] || '正在处理…';
+        if (state.status === 'completed') { done = true; }
+        if (state.status === 'failed') { alert(state.error || '本轮失败'); done = true; }
+      }
       await loadHistory(); await loadStatus(); $('image').value = '';
+      $('progress').textContent = ''; $('progress-bar').classList.remove('active'); document.querySelector('button[type="submit"]').disabled = false; $('content').disabled = false; $('imageButton').disabled = false; $('image').disabled = false;
+    };
+    $('imageButton').onclick = () => $('image').click();
+    $('image').onchange = () => {
+      const file = $('image').files[0];
+      if (file) $('content').placeholder = `已选择：${file.name}，点击发送`;
     };
     $('settings').onclick = () => $('settingsDialog').showModal();
     $('saveThread').onclick = async () => {
@@ -152,18 +172,15 @@
       const result = await response.json(); alert(result.message || result.error || '线程已切换'); if (response.ok) { await loadHistory(); await loadStatus(); }
     };
     $('reload').onclick = async () => { const response = await fetch('/api/settings/reload', {method:'POST'}); const result = await response.json(); alert(result.error || '配置已刷新'); if (response.ok) { await loadHistory(); await loadStatus(); } };
-    $('registerSlot').onclick = async () => {
-      const path = $('slotPath').value.trim();
-      if (!path) return;
-      const response = await fetch('/api/slots/register', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({path, slot_id:$('newSlotId').value, name:$('newSlotName').value})});
-      const result = await response.json(); alert(result.message || result.error || '角色文件夹已登记');
-      if (response.ok) { $('slotPath').value=''; $('newSlotId').value=''; $('newSlotName').value=''; await loadSlots(); }
-    };
-    $('deleteSlot').onclick = async () => {
-      const slotId = $('deleteSlotId').value.trim(); if (!slotId) return;
-      if (!confirm(`从列表移除槽位 ${slotId}？目录和历史数据会保留。`)) return;
-      const response = await fetch(`/api/slots/${encodeURIComponent(slotId)}`, {method:'DELETE'});
-      const result = await response.json(); alert(result.message || result.error || '槽位已移除'); if (response.ok) { $('deleteSlotId').value=''; await loadSlots(); }
+    $('chooseSlotFolder').onclick = async () => {
+      const picker = await (await fetch('/api/choose_slot_folder', {method:'POST'})).json();
+      if (picker.status !== 'selected') return;
+      const path = picker.path;
+      const response = await fetch('/api/slots/register', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({path})});
+      const result = await response.json();
+      if (!response.ok) { alert(result.message || result.error || '角色卡切换失败'); return; }
+      $('slotPath').value = path;
+      alert('角色卡已保存，请手动重启后端后生效');
     };
     $('shutdown').onclick = async () => {
       if (!confirm('退出应用并关闭本机后台？当前正在处理的后台任务会先完成收尾。')) return;

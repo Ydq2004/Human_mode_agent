@@ -46,6 +46,14 @@ GENERIC_REGION_PROFILES = {
     "back": {"baseline_sensitivity": 0.35, "recovery_half_life_minutes": 40.0},
     "thigh": {"baseline_sensitivity": 0.45, "recovery_half_life_minutes": 45.0},
 }
+GENERIC_REGION_ALIASES = {
+    "头": "head_scalp", "头部": "head_scalp", "头发": "head_scalp", "头皮": "head_scalp",
+    "脸": "face", "脸部": "face",
+    "脖子": "neck", "颈部": "neck",
+    "肩": "shoulder", "肩膀": "shoulder",
+    "手臂": "arm", "胳膊": "arm", "手": "hand",
+    "背": "back", "背部": "back", "大腿": "thigh",
+}
 
 _INTENSITY_FACTOR = {"gentle": 0.35, "moderate": 0.6, "strong": 1.0, "unknown": 0.0}
 _DURATION_FACTOR = {"brief": 0.35, "sustained": 0.8, "unknown": 0.0}
@@ -134,12 +142,18 @@ class SomaticContact:
 
 def _region_profile(region_id: str, registry: TypingMapping[str, Any] | None = None) -> BodyRegionProfile | None:
     source = GENERIC_REGION_PROFILES if registry is None else registry
-    raw = source.get(region_id)
+    canonical_id = GENERIC_REGION_ALIASES.get(region_id, region_id)
+    raw = source.get(canonical_id)
     if raw is None:
         return None
     if isinstance(raw, BodyRegionProfile):
         return raw
-    return BodyRegionProfile(region_id=region_id, **dict(raw))
+    return BodyRegionProfile(region_id=canonical_id, **dict(raw))
+
+
+def normalize_region_id(region_id: Any) -> str:
+    value = str(region_id or "").strip()
+    return GENERIC_REGION_ALIASES.get(value, value)
 
 def infer_explicit_consent(text: Any) -> str:
     """只识别当前用户事件中的明确同意/拒绝短语；不从暧昧语气推断同意。"""
@@ -206,8 +220,15 @@ class SomaticState:
             name = str(key).strip()
             if not name:
                 continue
-            if name in {"regions", "derived", "extension_state", "schema_version", "last_activity_at"}:
-                if name in {"regions", "derived", "extension_state"} and value is not None and not isinstance(value, Mapping):
+            if name in {
+                "regions",
+                "derived",
+                "extension_state",
+                "legacy_global",
+                "schema_version",
+                "last_activity_at",
+            }:
+                if name in {"regions", "derived", "extension_state", "legacy_global"} and value is not None and not isinstance(value, Mapping):
                     raise ValueError(f"身体状态 {name} 必须是 JSON object")
                 cleaned[name] = deepcopy(value)
                 continue
@@ -318,7 +339,7 @@ def _parse_contacts(request: Mapping[str, Any], region_registry: TypingMapping[s
     for raw in raw_contacts[:8]:
         if not isinstance(raw, Mapping):
             continue
-        region_id = _text(raw.get("region_id") or raw.get("contact_area"))
+        region_id = normalize_region_id(raw.get("region_id") or raw.get("contact_area"))
         if not region_id or _region_profile(region_id, region_registry) is None:
             continue
         try:
@@ -496,4 +517,5 @@ __all__ = [
     "create_somatic_response",
     "decay_somatic_state",
     "infer_explicit_consent",
+    "normalize_region_id",
 ]

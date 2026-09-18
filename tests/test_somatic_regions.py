@@ -33,6 +33,15 @@ class SomaticRegionTests(unittest.TestCase):
         self.assertEqual(decision.status, "uncertain")
         self.assertEqual(decision.contacts, ())
 
+    def test_common_chinese_region_alias_is_normalized(self):
+        decision = adjudicate_somatic_event({
+            "event_confirmed": True,
+            "contact_object": "user",
+            "contacts": [{"region_id": "头皮", "intensity": "gentle", "duration": "brief"}],
+        })
+        self.assertEqual(decision.status, "occurred")
+        self.assertEqual(decision.contacts[0].region_id, "head_scalp")
+
     def test_regional_update_does_not_change_unrelated_region(self):
         state, _ = apply_somatic_appraisal(
             SomaticState({"arousal": 0.5, "sensitivity": 0.5}),

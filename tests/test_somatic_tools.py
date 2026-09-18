@@ -77,6 +77,25 @@ class SomaticToolTests(unittest.TestCase):
             {"arousal": 0.55, "sensitivity": 0.5},
         )
 
+    def test_tool_exposes_reason_when_action_is_not_applied(self):
+        service = SomaticService(persona_instance_id="p", thread_id="reason", llm=_LLM())
+        with somatic_tool_context(service, source_event_id="evt-reason", consent_status="unknown"):
+            result = somatic_action.invoke({
+                "name": "somatic_action",
+                "type": "tool_call",
+                "id": "call-reason",
+                "args": {
+                    "action_description": "触碰头部",
+                    "target": "user",
+                    "contact_area": "头皮",
+                    "intensity": "gentle",
+                    "duration": "brief",
+                },
+            })
+        payload = json.loads(result.content)
+        self.assertEqual(payload["status"], "consent_required")
+        self.assertTrue(payload["outcome"]["reason"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -53,7 +53,7 @@ class SomaticToolTests(unittest.TestCase):
 
     def test_tool_returns_feedback(self):
         service = SomaticService(persona_instance_id="p", thread_id="t", llm=_LLM())
-        with somatic_tool_context(service, source_event_id="evt-1"):
+        with somatic_tool_context(service, source_event_id="evt-1", consent_status="explicit_yes"):
             result = somatic_action.invoke({
                 "name": "somatic_action",
                 "type": "tool_call",

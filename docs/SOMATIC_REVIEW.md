@@ -263,14 +263,14 @@ SomaticOutcome (可见反应 + 内感受 + 状态快照)
 ### 6.1 短期（本周）
 
 1. ✅ 完成身体模块审查（本文档）
-2. ⬜ 在 `process_perception_event` 中增加 consent 检查占位符
+2. ✅ 在身体事件裁决和 Agent 主动动作路径增加 consent 检查
 3. ⬜ 在主 Agent System Prompt 中增加身体指标解释边界
 4. ⬜ 更新 `SOMATIC_SIMULATION.md`，增加 consent 警告
 
 ### 6.2 中期（下周）
 
-1. ⬜ 设计 consent 裁决模块（结构化请求 + LLM 辅助判断）
-2. ⬜ 增加"身体反应不代表同意"的示例对话测试
+1. ✅ 设计第一版 consent 裁决边界（结构化请求，LLM 不替代同意判断）
+2. ✅ 增加"身体反应不代表同意"的反例测试
 3. ⬜ 在开放验收中观察身体模块的实际表现
 
 ### 6.3 长期（一个月内）

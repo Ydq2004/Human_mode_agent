@@ -20,6 +20,7 @@ class _ToolRuntime:
     service: SomaticService
     source_event_id: str
     count: int = 0
+    consent_status: str = "unknown"
 
 
 _RUNTIME: ContextVar[_ToolRuntime | None] = ContextVar("somatic_tool_runtime", default=None)
@@ -30,9 +31,10 @@ def somatic_tool_context(
     service: SomaticService,
     *,
     source_event_id: str,
+    consent_status: str = "unknown",
 ) -> Iterator[None]:
     """把当前实例身体服务绑定到一次 Agent 调用，结束后立即清理。"""
-    token = _RUNTIME.set(_ToolRuntime(service=service, source_event_id=source_event_id))
+    token = _RUNTIME.set(_ToolRuntime(service=service, source_event_id=source_event_id, consent_status=str(consent_status or "unknown")))
     try:
         yield
     finally:
@@ -93,6 +95,7 @@ def somatic_action(
         "action_description": str(action_description or "").strip(),
         "target": str(target or "").strip(),
         "execution_channel": "narrative_embodied",
+        "consent_status": runtime.consent_status,
     }
     outcome = runtime.service.process(
         request,

@@ -11,6 +11,7 @@ from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any
+import re
 
 from core.experience import AgentAction, create_agent_action
 from core.perception import PerceptionEvent, create_perception_event
@@ -26,6 +27,18 @@ BODY_STATE_DELTA = {
     "intense": 0.20,
 }
 _DIRECTIONS = frozenset({"increase", "decrease", "unchanged"})
+CONSENT_STATUSES = frozenset({"explicit_yes", "explicit_no", "unknown", "not_applicable"})
+
+def infer_explicit_consent(text: Any) -> str:
+    """只识别当前用户事件中的明确同意/拒绝短语；不从暧昧语气推断同意。"""
+    value = str(text or "").strip().lower()
+    if not value:
+        return "unknown"
+    if re.search(r"不同意|不允许|不要这样|别这样|停止|停下|no\b|拒绝", value):
+        return "explicit_no"
+    if re.search(r"我同意|明确同意|可以抱|请抱|允许你|请继续|好的，?可以|yes\b", value):
+        return "explicit_yes"
+    return "unknown"
 
 
 @dataclass(frozen=True)
@@ -102,10 +115,15 @@ def adjudicate_somatic_event(request: Mapping[str, Any] | None) -> SomaticEventD
     intensity = _text(request.get("intensity")).lower() or "unknown"
     duration = _text(request.get("duration")).lower() or "unknown"
     uncertainty = _text(request.get("uncertainty")).lower() or "high"
+    consent_status = _text(request.get("consent_status")).lower() or "unknown"
+    if consent_status not in CONSENT_STATUSES:
+        return SomaticEventDecision("uncertain", contact_object, contact_area, intensity, duration, "high", "consent_status 不在允许范围内。")
     if intensity not in SOMATIC_INTENSITIES or duration not in SOMATIC_DURATIONS:
         return SomaticEventDecision("uncertain", contact_object, contact_area, reason="接触强度或持续时间不在允许范围内。")
     if not confirmed:
         return SomaticEventDecision("rejected", contact_object, contact_area, intensity, duration, uncertainty, "请求明确表示模拟事件没有发生。")
+    if consent_status == "explicit_no":
+        return SomaticEventDecision("rejected", contact_object, contact_area, intensity, duration, uncertainty, "请求明确表示对该动作不同意。")
     if not contact_object or not contact_area:
         return SomaticEventDecision("uncertain", contact_object, contact_area, intensity, duration, "high", "已声明事件发生，但缺少对象或部位。")
     return SomaticEventDecision("occurred", contact_object, contact_area, intensity, duration, uncertainty, "结构化请求明确确认事件发生。")
@@ -162,4 +180,4 @@ def create_somatic_response(description: str, state: SomaticState, *, triggered_
     )
 
 
-__all__ = ["BODY_STATE_DELTA", "SomaticEventDecision", "SomaticState", "adjudicate_somatic_event", "apply_somatic_appraisal", "create_somatic_interoception", "create_somatic_response"]
+__all__ = ["BODY_STATE_DELTA", "CONSENT_STATUSES", "SomaticEventDecision", "SomaticState", "adjudicate_somatic_event", "apply_somatic_appraisal", "create_somatic_interoception", "create_somatic_response", "infer_explicit_consent"]

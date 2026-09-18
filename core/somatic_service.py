@@ -176,6 +176,19 @@ class SomaticService:
                 state_after=current.state,
                 revision=current.revision,
             )
+        if source_kind == "agent_action" and str((request or {}).get("target") or "").strip().lower() in {"user", "用户", "person", "other"}:
+            if str((request or {}).get("consent_status") or "unknown").strip().lower() != "explicit_yes":
+                return SomaticOutcome(
+                    status="consent_required",
+                    operation_id=op_id,
+                    source_kind=source_kind,
+                    decision=SomaticEventDecision("uncertain", reason="主动接触他人前必须有框架记录的明确同意；身体反应不能代替同意。"),
+                    appraisal=None,
+                    state_before=current.state,
+                    state_after=current.state,
+                    revision=current.revision,
+                    error="consent_required",
+                )
 
         existing = get_somatic_operation(op_id)
         if existing is not None:

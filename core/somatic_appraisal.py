@@ -36,6 +36,7 @@ class SomaticAppraisal:
     sensitivity_magnitude: str = "slight"
     visible_reaction: str = ""
     interoception_description: str = ""
+    region_updates: list[dict[str, str]] | None = None
     reason: str = ""
     error: str = ""
 
@@ -48,6 +49,7 @@ class SomaticAppraisal:
             "sensitivity_magnitude": self.sensitivity_magnitude,
             "visible_reaction": self.visible_reaction,
             "interoception_description": self.interoception_description,
+            "region_updates": list(self.region_updates or []),
             "reason": self.reason,
             "error": self.error,
         }
@@ -90,10 +92,30 @@ def clean_somatic_appraisal(raw: Mapping[str, Any]) -> SomaticAppraisal:
     if not visible or not interoception:
         raise ValueError("身体评价必须同时提供外在反应和内感受")
 
+    region_updates: list[dict[str, str]] = []
+    raw_updates = raw.get("region_updates", [])
+    if raw_updates is not None:
+        if not isinstance(raw_updates, list):
+            raise ValueError("region_updates 必须是数组")
+        for item in raw_updates[:8]:
+            if not isinstance(item, Mapping) or not str(item.get("region_id") or "").strip():
+                raise ValueError("region_updates 中存在无效部位")
+            direction = _text(item.get("sensation_direction") or item.get("direction"), 30).lower() or "unchanged"
+            magnitude = _text(item.get("sensation_magnitude") or item.get("magnitude"), 30).lower() or "slight"
+            if direction not in _DIRECTIONS or magnitude not in BODY_STATE_DELTA:
+                raise ValueError("region_updates 的方向或幅度不合法")
+            region_updates.append({
+                "region_id": _text(item.get("region_id"), 80),
+                "sensation_direction": direction,
+                "sensation_magnitude": magnitude,
+                "valence": _text(item.get("valence"), 40),
+            })
+
     return SomaticAppraisal(
         status="normal",
         visible_reaction=visible,
         interoception_description=interoception,
+        region_updates=region_updates,
         reason=_text(raw.get("reason")),
         **cleaned,
     )
@@ -131,6 +153,8 @@ def _build_prompt(
 - 只返回协议中的字段，不写身体状态绝对值，也不增加新的状态维度。
 - 不替其他模块作社会关系、人格、记忆或许可判断。
 - 不续写对话，不替主 Agent 回复用户。
+- 如果能明确区分部位，可额外返回 region_updates；其中只能写输入事件中已有的 region_id、方向和幅度。
+- 不要创建输入中不存在的部位，也不要返回任何内部状态数值或领域扩展字段。
 
 输入：
 {json.dumps(payload, ensure_ascii=False, indent=2)}
@@ -143,6 +167,9 @@ def _build_prompt(
   "sensitivity_magnitude": "slight | moderate | significant | intense",
   "visible_reaction": "角色世界中可观察到的简短身体反应",
   "interoception_description": "Agent 本轮感知到的简短内部感觉",
+  "region_updates": [
+    {{"region_id": "输入中的部位 ID", "sensation_direction": "increase | decrease | unchanged", "sensation_magnitude": "slight | moderate | significant | intense", "valence": "中性身体感受类别"}}
+  ],
   "reason": "只解释身体层依据"
 }}
 """.strip()

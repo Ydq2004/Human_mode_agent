@@ -88,9 +88,17 @@ def somatic_action(
     request = {
         "event_confirmed": True,
         "contact_object": "agent",
-        "contact_area": contact_area,
-        "intensity": intensity,
-        "duration": duration,
+        "contact_area": contact_area,  # 旧协议兼容字段
+        "contacts": [{
+            "region_id": str(contact_area or "").strip(),
+            "contact_type": "action",
+            "intensity": intensity,
+            "duration": duration,
+            "movement": "unknown",
+            "certainty": "high",
+        }],
+        "intensity": intensity,  # 旧协议兼容字段
+        "duration": duration,  # 旧协议兼容字段
         "uncertainty": "low",
         "action_description": str(action_description or "").strip(),
         "target": str(target or "").strip(),
@@ -110,11 +118,22 @@ def somatic_action(
         },
     )
     status = "success" if outcome.status == "completed" else outcome.status
+    outcome_payload = outcome.to_dict()
+    # 工具 artifact 继续保留旧版全局快照字段，避免旧的经历读取器失效；
+    # 新的部位状态仍完整保存在 SQLite 操作记录和运行时 outcome 中。
+    for state_key in ("state_before", "state_after"):
+        state_value = outcome_payload.get(state_key)
+        if isinstance(state_value, dict):
+            outcome_payload[state_key] = {
+                key: state_value[key]
+                for key in ("arousal", "sensitivity")
+                if key in state_value
+            }
     full_payload = {
         "operation": "somatic_action",
         "status": status,
         "execution_channel": "narrative_embodied",
-        "outcome": outcome.to_dict(),
+        "outcome": outcome_payload,
         "source_boundary": "结果只描述当前执行通道中的动作和身体反馈，通道能力以能力快照为准。",
     }
     # content 是模型可见结果：只给执行状态、动作反馈和内感受，不给身体

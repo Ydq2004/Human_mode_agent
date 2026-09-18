@@ -123,6 +123,9 @@ _SOMATIC_INTERNAL_KEYS = frozenset({
     "state_after",
     "body_state",
     "body_state_snapshot",
+    "somatic_state",
+    "somatic_regions",
+    "somatic_extension_state",
 })
 
 

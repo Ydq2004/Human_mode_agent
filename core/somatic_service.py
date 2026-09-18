@@ -10,11 +10,15 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 from core.somatic_appraisal import SomaticAppraisal, appraise_somatic_event
+from core.somatic_extensions import DisabledSomaticExtension, SomaticExtension, apply_extension_result
 from core.somatic_simulation import (
+    GENERIC_REGION_PROFILES,
+    SomaticContact,
     SomaticEventDecision,
     SomaticState,
     adjudicate_somatic_event,
     apply_somatic_appraisal,
+    decay_somatic_state,
 )
 from memory.somatic_store import (
     commit_somatic_transition,
@@ -67,8 +71,25 @@ def _decision_from_dict(value: Mapping[str, Any]) -> SomaticEventDecision:
         "duration",
         "uncertainty",
         "reason",
+        "consent_status",
     }
-    return SomaticEventDecision(**{key: value[key] for key in allowed if key in value})
+    raw_contacts = value.get("contacts")
+    contacts = []
+    if isinstance(raw_contacts, list):
+        for raw in raw_contacts:
+            if not isinstance(raw, Mapping):
+                continue
+            try:
+                contacts.append(SomaticContact(**{
+                    key: raw[key]
+                    for key in ("region_id", "contact_type", "intensity", "duration", "movement", "certainty")
+                    if key in raw
+                }))
+            except (TypeError, ValueError):
+                continue
+    payload = {key: value[key] for key in allowed if key in value}
+    payload["contacts"] = tuple(contacts)
+    return SomaticEventDecision(**payload)
 
 
 def _appraisal_from_dict(value: Mapping[str, Any] | None) -> SomaticAppraisal | None:
@@ -90,6 +111,8 @@ class SomaticService:
         persona_context: Mapping[str, Any] | None = None,
         enabled: bool = True,
         allow_agent_initiated_actions: bool = True,
+        region_registry: Mapping[str, Any] | None = None,
+        extension: SomaticExtension | None = None,
         timeout_seconds: float | None = SOMATIC_SERVICE_TIMEOUT_SECONDS,
     ) -> None:
         self.persona_instance_id = str(persona_instance_id or "").strip()
@@ -100,6 +123,12 @@ class SomaticService:
         self.persona_context = dict(persona_context or {})
         self.enabled = bool(enabled)
         self.allow_agent_initiated_actions = bool(allow_agent_initiated_actions)
+        # 只接受通用注册表或显式传入的中性注册表；成人扩展通过独立协议接入，
+        # 不会因为创建 SomaticService 就默认开启。
+        self.region_registry = dict(
+            GENERIC_REGION_PROFILES if region_registry is None else region_registry
+        )
+        self.extension = extension or DisabledSomaticExtension()
         self.timeout_seconds = timeout_seconds
 
     def current_state(self):
@@ -132,7 +161,8 @@ class SomaticService:
         event_context: Mapping[str, Any] | None = None,
     ) -> SomaticOutcome:
         """同步处理一次身体事件，让反馈能进入主 Agent 的本轮思考。"""
-        current = self.current_state()
+        stored_current = self.current_state()
+        current_state = decay_somatic_state(stored_current.state, region_registry=self.region_registry)
         op_id = str(operation_id or "").strip()
         if not self.enabled:
             return SomaticOutcome(
@@ -141,9 +171,9 @@ class SomaticService:
                 source_kind=source_kind,
                 decision=SomaticEventDecision("rejected", reason="当前实例未启用叙事身体能力。"),
                 appraisal=None,
-                state_before=current.state,
-                state_after=current.state,
-                revision=current.revision,
+                state_before=current_state,
+                state_after=current_state,
+                revision=stored_current.revision,
             )
         if source_kind == "agent_action" and not self.allow_agent_initiated_actions:
             return SomaticOutcome(
@@ -155,9 +185,9 @@ class SomaticService:
                     reason="当前角色配置不允许 Agent 主动发起身体动作。",
                 ),
                 appraisal=None,
-                state_before=current.state,
-                state_after=current.state,
-                revision=current.revision,
+                state_before=current_state,
+                state_after=current_state,
+                revision=stored_current.revision,
             )
         if source_kind == "agent_action" and (
             not str((request or {}).get("action_description") or "").strip()
@@ -172,9 +202,9 @@ class SomaticService:
                     reason="主动身体动作缺少动作描述或目标。",
                 ),
                 appraisal=None,
-                state_before=current.state,
-                state_after=current.state,
-                revision=current.revision,
+                state_before=current_state,
+                state_after=current_state,
+                revision=stored_current.revision,
             )
         if source_kind == "agent_action" and str((request or {}).get("target") or "").strip().lower() in {"user", "用户", "person", "other"}:
             if str((request or {}).get("consent_status") or "unknown").strip().lower() != "explicit_yes":
@@ -184,9 +214,9 @@ class SomaticService:
                     source_kind=source_kind,
                     decision=SomaticEventDecision("uncertain", reason="主动接触他人前必须有框架记录的明确同意；身体反应不能代替同意。"),
                     appraisal=None,
-                    state_before=current.state,
-                    state_after=current.state,
-                    revision=current.revision,
+                    state_before=current_state,
+                    state_after=current_state,
+                    revision=stored_current.revision,
                     error="consent_required",
                 )
 
@@ -194,7 +224,7 @@ class SomaticService:
         if existing is not None:
             return self._restore_outcome(existing)
 
-        decision = adjudicate_somatic_event(request)
+        decision = adjudicate_somatic_event(request, region_registry=self.region_registry)
         if decision.status != "occurred":
             return SomaticOutcome(
                 status=decision.status,
@@ -202,15 +232,15 @@ class SomaticService:
                 source_kind=source_kind,
                 decision=decision,
                 appraisal=None,
-                state_before=current.state,
-                state_after=current.state,
-                revision=current.revision,
+                state_before=current_state,
+                state_after=current_state,
+                revision=stored_current.revision,
             )
 
         appraisal = appraise_somatic_event(
             llm=self.llm,
             decision=decision,
-            state=current.state,
+            state=current_state,
             event_context=dict(event_context or request or {}),
             persona_context=self.persona_context,
             timeout_seconds=self.timeout_seconds,
@@ -222,20 +252,54 @@ class SomaticService:
                 source_kind=source_kind,
                 decision=decision,
                 appraisal=appraisal,
-                state_before=current.state,
-                state_after=current.state,
-                revision=current.revision,
+                state_before=current_state,
+                state_after=current_state,
+                revision=stored_current.revision,
                 error=appraisal.error,
             )
 
         next_state, _changes = apply_somatic_appraisal(
-            current.state,
+            current_state,
             appraisal.to_dict(),
+            contacts=decision.contacts,
+            region_registry=self.region_registry,
         )
+        try:
+            extension_result = self.extension.apply(
+                state=next_state,
+                decision=decision,
+                appraisal=appraisal.to_dict(),
+            )
+            next_state = apply_extension_result(next_state, extension_result)
+        except Exception as exc:
+            return SomaticOutcome(
+                status="failed",
+                operation_id=op_id,
+                source_kind=source_kind,
+                decision=decision,
+                appraisal=appraisal,
+                state_before=current_state,
+                state_after=current_state,
+                revision=stored_current.revision,
+                error=f"身体扩展失败：{type(exc).__name__}: {str(exc)[:300]}",
+            )
+        if extension_result.status == "failed":
+            return SomaticOutcome(
+                status="failed",
+                operation_id=op_id,
+                source_kind=source_kind,
+                decision=decision,
+                appraisal=appraisal,
+                state_before=current_state,
+                state_after=current_state,
+                revision=stored_current.revision,
+                error=extension_result.error or "身体扩展处理失败",
+            )
         result_payload = {
             "visible_reaction": appraisal.visible_reaction,
             "interoception_description": appraisal.interoception_description,
             "action_description": str((request or {}).get("action_description") or "").strip(),
+            "extension_events": [dict(item) for item in extension_result.public_events],
         }
         committed = commit_somatic_transition(
             operation_id=op_id,
@@ -243,7 +307,7 @@ class SomaticService:
             thread_id=self.thread_id,
             source_event_id=source_event_id,
             source_kind=source_kind,
-            expected_revision=current.revision,
+            expected_revision=stored_current.revision,
             state_after=next_state,
             decision=decision.to_dict(),
             appraisal=appraisal.to_dict(),
@@ -256,7 +320,7 @@ class SomaticService:
                 source_kind=source_kind,
                 decision=decision,
                 appraisal=appraisal,
-                state_before=current.state,
+                state_before=current_state,
                 state_after=committed.record.state,
                 revision=committed.record.revision,
                 error="身体状态已被其他事件更新，本次旧状态计算未提交。",

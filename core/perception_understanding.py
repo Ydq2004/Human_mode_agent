@@ -362,20 +362,41 @@ def _clean_understanding(
                 "event_confirmed",
                 "contact_object",
                 "contact_area",
+                "contact_type",
                 "intensity",
                 "duration",
+                "movement",
+                "contacts",
+                "consent",
                 "uncertainty",
                 "action_description",
                 "target",
                 "execution_channel",
             }
+            cleaned_candidate = {
+                key: candidate[key]
+                for key in allowed
+                if key in candidate and key != "contacts"
+            }
+            raw_contacts = candidate.get("contacts")
+            if isinstance(raw_contacts, list):
+                cleaned_contacts = []
+                for contact in raw_contacts[:8]:
+                    if not isinstance(contact, dict):
+                        continue
+                    contact_allowed = {
+                        "region_id", "contact_type", "intensity", "pressure",
+                        "duration", "movement", "certainty", "uncertainty",
+                    }
+                    cleaned_contacts.append({
+                        key: contact[key]
+                        for key in contact_allowed
+                        if key in contact
+                    })
+                cleaned_candidate["contacts"] = cleaned_contacts
             module_requests.append({
                 "module": "somatic",
-                "event_candidate": {
-                    key: candidate[key]
-                    for key in allowed
-                    if key in candidate
-                },
+                "event_candidate": cleaned_candidate,
                 "derived_from": _clean_text(item.get("derived_from")),
             })
 

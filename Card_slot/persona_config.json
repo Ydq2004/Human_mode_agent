@@ -48,7 +48,7 @@
 
     "model": {
       "provider": "中转站",
-      "model_name": "deepseek-v4.1-flash-expires-on-0910",
+      "model_name": "deepseek-flash",
       "temperature": 0.8,
       "base_url": "https://api.deepseek.com",
       "api_key_env": "DEEPSEEK_API_KEY",

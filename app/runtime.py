@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import json
 import threading
+from concurrent.futures import ThreadPoolExecutor
+from uuid import uuid4
 from pathlib import Path
 from typing import Any, Callable
 
@@ -37,6 +39,9 @@ from core.background_task_worker import BackgroundTaskWorker
 from core.commit_worker import CommitWorker
 from core.comfyui_process import ComfyUIProcessManager, ComfyUIStartupError
 from core.image_generation_service import ImageGenerationService
+from core.http_client import HttpClient
+from core.web_search_service import WebSearchService
+from core.browser_service import BrowserService
 from core.memory_commit import MemoryCommitService
 from core.perception import PerceptionEvent, create_perception_event
 from core.somatic_service import SomaticService
@@ -83,9 +88,13 @@ from tools.environment_tools import get_current_time
 from tools.calculation_tools import calculate
 from tools.search_tools import search_text
 from tools.metadata_tools import read_image_metadata
-from tools.process_tools import execute_command, run_command_task
+from tools.process_tools import execute_command, run_command_task, run_process_task, start_process, get_process_status, get_process_output, terminate_process
+from tools.http_tools import http_request
+from tools.web_search_tools import web_search, web_search_context
+from tools.browser_tools import browser_open, browser_snapshot, browser_close, browser_click, browser_fill, browser_context
 from tools.somatic_tools import somatic_action
 from tools.vision_tools import vision_describe_image
+from tools.knowledge_tools import search_knowledge_base
 
 
 class RuntimeClosedError(RuntimeError):
@@ -110,6 +119,9 @@ class ApplicationRuntime:
         self._file_confirm = file_confirm or (lambda _request: False)
         self._event_lock = threading.RLock()
         self._busy = False
+        self._progress_lock = threading.Lock()
+        self._jobs: dict[str, dict[str, Any]] = {}
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="agent-event")
         self._closed = False
         self._recent_context: list[str] = []
         self._initialise()
@@ -133,6 +145,7 @@ class ApplicationRuntime:
             apply_patch,
             somatic_action,
             vision_describe_image,
+            search_knowledge_base,
             consult_advanced_model,
             start_code_review,
             get_background_task_status,
@@ -144,6 +157,8 @@ class ApplicationRuntime:
             search_text,
             read_image_metadata,
             execute_command,
+            http_request, web_search, browser_open, browser_snapshot, browser_close, browser_click, browser_fill,
+            start_process, get_process_status, get_process_output, terminate_process,
         ]
 
     def _initialise(self) -> None:
@@ -212,6 +227,8 @@ class ApplicationRuntime:
         )
         self.advanced_llm = create_advanced_llm()
         self.image_generation_service = ImageGenerationService()
+        self.web_search_service = WebSearchService.from_environment()
+        self.browser_service = BrowserService()
         self.comfyui_manager = ComfyUIProcessManager(
             base_url=COMFYUI_BASE_URL,
             executable=COMFYUI_EXECUTABLE,
@@ -243,6 +260,7 @@ class ApplicationRuntime:
                 lambda task: run_code_review(task, self.advanced_llm),
             )
         self.background_worker.register("command", run_command_task)
+        self.background_worker.register("process", run_process_task)
         self.background_worker.submit_due(limit=100)
 
         ensure_somatic_store()
@@ -332,6 +350,9 @@ class ApplicationRuntime:
                     advanced_llm=self.advanced_llm,
                     persona_instance_id=self.persona_instance_id,
                     image_generation_service=self.image_generation_service,
+                    web_search_service=getattr(self, "web_search_service", None),
+                    browser_service=getattr(self, "browser_service", None),
+                    progress_sink=lambda item: self._update_progress(event.event_id, item),
                 )
                 experience = result["experience_slice"]
                 self._recent_context.append(_working_context_from_experience(experience))
@@ -340,6 +361,46 @@ class ApplicationRuntime:
                 return result
             finally:
                 self._busy = False
+
+    def _update_progress(self, event_id: str, item: dict[str, Any]) -> None:
+        with self._progress_lock:
+            job = self._jobs.get(event_id)
+            if job is not None:
+                job.update(item)
+
+    def submit_event_async(self, event: PerceptionEvent) -> dict[str, Any]:
+        if not isinstance(event, PerceptionEvent):
+            raise TypeError("event 必须是 PerceptionEvent")
+        event_id = event.event_id
+        with self._event_lock:
+            self._ensure_open()
+            if self._busy or any(item.get("status") in {"queued", "running"} for item in self._jobs.values()):
+                raise RuntimeError("当前对话仍在处理上一条消息，请等待完成")
+        with self._progress_lock:
+            self._jobs[event_id] = {"event_id": event_id, "stage": "queued", "status": "queued"}
+        future = self._executor.submit(self._run_async_event, event)
+        with self._progress_lock:
+            self._jobs[event_id]["future"] = future
+        return {"event_id": event_id, "status": "queued"}
+
+    def _run_async_event(self, event: PerceptionEvent) -> None:
+        try:
+            result = self.submit_event(event)
+            with self._progress_lock:
+                self._jobs[event.event_id].update({"status": "completed", "stage": "completed", "result": result})
+        except Exception as exc:
+            with self._progress_lock:
+                self._jobs[event.event_id].update({"status": "failed", "stage": "failed", "error": f"{type(exc).__name__}: {exc}"})
+
+    def async_status(self, event_id: str) -> dict[str, Any] | None:
+        with self._progress_lock:
+            job = self._jobs.get(str(event_id))
+            if job is None:
+                return None
+            result = {k: v for k, v in job.items() if k not in {"future", "result"}}
+            if job.get("status") == "completed":
+                result["result"] = job.get("result")
+            return result
 
     def submit_text(self, content: str) -> dict[str, Any]:
         content = str(content or "").strip()
@@ -369,7 +430,7 @@ class ApplicationRuntime:
             file_confirm=self._file_confirm,
         )
 
-    def history(self, *, limit: int = 100) -> list[dict[str, Any]]:
+    def history(self, *, limit: int = 1000) -> list[dict[str, Any]]:
         """从不可变 ExperienceSlice 生成 UI 历史，不解析终端输出。"""
         rows = list_experience_slices(thread_id=self.thread_id, limit=limit)
         messages: list[dict[str, Any]] = []
@@ -442,11 +503,17 @@ class ApplicationRuntime:
             "busy": bool(self._busy),
             "persona": self.persona.get("agent_name"),
             "advanced_model": self.advanced_llm is not None,
+            "web_search": getattr(getattr(self, "web_search_service", None), "provider", False) if getattr(getattr(self, "web_search_service", None), "api_key", "") else False,
+            "browser": bool(getattr(getattr(self, "browser_service", None), "available", False)),
             "native_vision": bool(
                 (self.capability_snapshot.get("vision") or {}).get("native")
             ),
             "comfyui": self.comfyui_manager.status().to_dict(),
         }
+
+    def confirm_browser_action(self, confirmation_id: str, approved: bool) -> dict[str, Any]:
+        """由宿主界面确认浏览器动作；Agent 本身不能调用该确认入口。"""
+        return self.browser_service.confirm_action(confirmation_id, approved=bool(approved))
 
     def shutdown(self, *, cancel_pending: bool = False) -> None:
         with self._event_lock:
@@ -468,7 +535,11 @@ class ApplicationRuntime:
             )
             self.vector_repair_worker.shutdown(wait=True)
             self.background_worker.shutdown(wait=True)
+            self._executor.shutdown(wait=True, cancel_futures=False)
             self.comfyui_manager.stop()
+            browser_service = getattr(self, "browser_service", None)
+            if browser_service is not None:
+                browser_service.shutdown()
             connection = self._agent_resources.get("checkpoint_connection")
             close = getattr(connection, "close", None)
             if callable(close):

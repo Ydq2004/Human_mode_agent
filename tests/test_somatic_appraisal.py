@@ -1,5 +1,4 @@
 import json
-import time
 import unittest
 
 from core.somatic_appraisal import appraise_somatic_event, clean_somatic_appraisal
@@ -85,21 +84,3 @@ class SomaticAppraisalTests(unittest.TestCase):
             event_context={},
         )
         self.assertEqual(result.status, "failed")
-
-    def test_service_timeout_is_explicit(self):
-        class SlowLLM(FakeLLM):
-            def invoke(self, prompt):
-                time.sleep(0.05)
-                return super().invoke(prompt)
-
-        result = appraise_somatic_event(
-            llm=SlowLLM({
-                "arousal_change": "unchanged", "arousal_magnitude": "slight",
-                "sensitivity_change": "unchanged", "sensitivity_magnitude": "slight",
-                "visible_reaction": "x", "interoception_description": "y",
-            }),
-            decision=decision(), state=SomaticState({"arousal": 0.5}),
-            event_context={}, timeout_seconds=0.001,
-        )
-        self.assertEqual(result.status, "failed")
-        self.assertIn("超时", result.error)

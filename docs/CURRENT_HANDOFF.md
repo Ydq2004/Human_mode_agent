@@ -1,6 +1,6 @@
 # CURRENT_HANDOFF
 
-更新时间：2026-09-08
+更新时间：2026-09-18
 
 用途：新会话开始时，先读取 `AGENTS.md`、`docs/Phase0_Memory_Architecture_Redesign.md` 和本文件，再继续工作。
 
@@ -15,6 +15,15 @@
 - 实例层：当前线程、情绪状态、具体用户和当前认知库。
 
 当前最重要的架构原则：不要把聊天文本当成 Agent 的世界入口；不要把一次回合后处理当成全部反思；不要为通过单个样例持续给 prompt 打补丁。
+
+## 本地 PDF 知识库（第一版）
+
+已新增独立的外部资料知识库：`memory/knowledge_base.py` 负责 PDF 文本提取、按页分块、
+SQLite 元数据和独立 Chroma 索引；`tools/search_knowledge_base` 是 Agent 可调用的只读检索工具。
+导入通过显式命令 `python -m tools.import_knowledge <pdf_path>` 完成，不开放给 Agent 作为写入工具。
+知识库与 `MemoryEntity`、ExperienceSlice 和个人 Chroma collection 分离；检索结果必须保留文件名
+和页码，不能把外部文档伪装成角色亲身经历。当前 PDF 为文本型 PDF，扫描件需要先 OCR；长期运行的
+索引失败修复、删除接口和网页管理界面暂未实现。
 
 ## Codex 的协作权限
 
@@ -628,9 +637,9 @@ Web MVP，提供本机聊天、历史、图片上传/受控展示、线程设置
 到该运行时，非阻塞任务状态、配置热刷新和桌面打包仍待后续闭环验证。
 Web MVP 的设置页现已提供“退出应用”按钮，对应 `/api/shutdown`：请求先返回确认，随后关闭 HTTP
 服务并由 `ApplicationRuntime.shutdown()` 排空后台 worker。终端启动方式仍可使用 `Ctrl+C`。默认不
-关闭外部已有的 ComfyUI；是否关闭由应用自己启动的 ComfyUI 仍由 `COMFYUI_STOP_ON_APP_EXIT` 控制。
-应用启动增加项目级单实例锁，重复启动会被拒绝；设置页的角色槽位改为可直接登记已有角色文件夹，
-聊天历史加载后自动定位到最新消息，设置入口固定在窗口右上角。
+应用自己启动的 ComfyUI 会随应用退出而停止；外部已有的 ComfyUI 只复用、不关闭。
+应用启动增加项目级单实例锁，重复启动会被拒绝；设置页通过本机文件夹选择器切换角色卡，取消槽位
+ID、显示名称和删除等多角色管理控件；聊天历史加载后自动定位到最新消息，设置入口固定在窗口右上角。
 `process_perception_event` 现在额外返回只包含文件名、MIME、大小和哈希的受控媒体元数据；
 生成结果必须位于当前槽位 `generated_images` 目录，UI 不解析终端输出，也不接触绝对本地路径。
 同时新增 `core/comfyui_process.py`：启动时先复用健康的 ComfyUI，只有显式配置可执行文件时才

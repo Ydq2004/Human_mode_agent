@@ -55,6 +55,14 @@ EMBEDDING_MODEL_NAME = "BAAI/bge-small-zh-v1.5"
 EMBEDDING_LOCAL_FILES_ONLY = True
 RETRIEVAL_K = 5
 
+# 外部 PDF 知识库与个人长期认知使用不同的 Chroma collection 和目录。
+# 资料只作为带来源的检索上下文，不会自动进入 MemoryEntity。
+KNOWLEDGE_COLLECTION_NAME = "agent_knowledge_documents"
+KNOWLEDGE_CHROMA_DIR = CARD_SLOT_ROOT / "memory_db" / "knowledge_chroma_db"
+KNOWLEDGE_MAX_PDF_BYTES = 50 * 1024 * 1024
+KNOWLEDGE_CHUNK_SIZE = 1200
+KNOWLEDGE_CHUNK_OVERLAP = 180
+
 # 主 Agent 单轮主动回忆最多调用次数。
 # 这是代码层硬限制，不依赖提示词；达到上限后，工具返回限制状态，
 # Agent 必须根据已经拿到的结果回答，不能继续扩大查询。
@@ -125,7 +133,8 @@ else:
 COMFYUI_STARTUP_TIMEOUT_SECONDS = 120.0
 COMFYUI_HEALTHCHECK_TIMEOUT_SECONDS = 2.0
 COMFYUI_POLL_INTERVAL_SECONDS = 0.5
-COMFYUI_STOP_ON_APP_EXIT = False
+# 应用自己启动的 ComfyUI 随应用退出；已在外部独立启动的服务仍只复用、不关闭。
+COMFYUI_STOP_ON_APP_EXIT = True
 COMFYUI_LOG_ROOT = CARD_SLOT_ROOT / "runtime_logs"
 IMAGE_GENERATION_WORKFLOW_PATH = CARD_SLOT_ROOT / "image_generation" / "workflow_api.json"
 IMAGE_GENERATION_UPSCALE_WORKFLOW_PATH = CARD_SLOT_ROOT / "image_generation" / "workflow_api_upscale.json"
@@ -175,7 +184,6 @@ ADVANCED_LLM_CONFIG = {
     "base_url": "https://tntapi.com/v1",
     "api_key_env": "TNT_GPT_API_KEY",
 }
-
 
 # ========== 情绪运行状态 ==========
 MOOD_MIN = 0

@@ -1,0 +1,207 @@
+Adding extra search path checkpoints E:\ai\sd-webui-aki-v4.10\models\Stable-diffusion
+Adding extra search path configs E:\ai\sd-webui-aki-v4.10\models\Stable-diffusion
+Adding extra search path vae E:\ai\sd-webui-aki-v4.10\models\VAE
+Adding extra search path loras E:\ai\sd-webui-aki-v4.10\models\Lora
+Adding extra search path loras E:\ai\sd-webui-aki-v4.10\models\LyCORIS
+Adding extra search path upscale_models E:\ai\sd-webui-aki-v4.10\models\ESRGAN
+Adding extra search path upscale_models E:\ai\sd-webui-aki-v4.10\models\RealESRGAN
+Adding extra search path upscale_models E:\ai\sd-webui-aki-v4.10\models\SwinIR
+Adding extra search path embeddings E:\ai\sd-webui-aki-v4.10\embeddings
+Adding extra search path hypernetworks E:\ai\sd-webui-aki-v4.10\models\hypernetworks
+Adding extra search path controlnet E:\ai\sd-webui-aki-v4.10\models\ControlNet
+[START] Security scan
+[DONE] Security scan
+## ComfyUI-Manager: installing dependencies done.
+** ComfyUI startup time: 2026-10-16 00:29:54.673
+** Platform: Windows
+** Python version: 3.11.9 (tags/v3.11.9:de54cf5, Apr  2 2024, 10:12:12) [MSC v.1938 64 bit (AMD64)]
+** Python executable: E:\ai\ComfyUI-aki-v1.6\ComfyUI-aki-v1.6\python\python.exe
+** ComfyUI Path: E:\ai\ComfyUI-aki-v1.6\ComfyUI-aki-v1.6\ComfyUI
+** ComfyUI Base Folder Path: E:\ai\ComfyUI-aki-v1.6\ComfyUI-aki-v1.6\ComfyUI
+** User directory: E:\ai\ComfyUI-aki-v1.6\ComfyUI-aki-v1.6\ComfyUI\user
+** ComfyUI-Manager config path: E:\ai\ComfyUI-aki-v1.6\ComfyUI-aki-v1.6\ComfyUI\user\default\ComfyUI-Manager\config.ini
+** Log path: E:\ai\ComfyUI-aki-v1.6\ComfyUI-aki-v1.6\ComfyUI\user\comfyui.log
+
+[notice] A new release of pip is available: 24.0 -> 26.2.1
+[notice] To update, run: python.exe -m pip install --upgrade pip
+
+[notice] A new release of pip is available: 24.0 -> 26.2.1
+[notice] To update, run: python.exe -m pip install --upgrade pip
+
+Prestartup times for custom nodes:
+   0.0 seconds: E:\ai\ComfyUI-aki-v1.6\ComfyUI-aki-v1.6\ComfyUI\custom_nodes\rgthree-comfy
+   6.2 seconds: E:\ai\ComfyUI-aki-v1.6\ComfyUI-aki-v1.6\ComfyUI\custom_nodes\comfyui-manager
+
+WARNING: You need pytorch with cu130 or higher to use optimized CUDA operations.
+Found comfy_kitchen backend eager: {'available': True, 'disabled': False, 'unavailable_reason': None, 'capabilities': ['apply_rope', 'apply_rope1', 'dequantize_nvfp4', 'dequantize_per_tensor_fp8', 'quantize_nvfp4', 'quantize_per_tensor_fp8', 'scaled_mm_nvfp4']}
+Found comfy_kitchen backend triton: {'available': False, 'disabled': True, 'unavailable_reason': "ImportError: No module named 'triton'", 'capabilities': []}
+Found comfy_kitchen backend cuda: {'available': True, 'disabled': True, 'unavailable_reason': None, 'capabilities': ['apply_rope', 'apply_rope1', 'dequantize_nvfp4', 'dequantize_per_tensor_fp8', 'quantize_mxfp8', 'quantize_nvfp4', 'quantize_per_tensor_fp8']}
+Checkpoint files will always be loaded safely.
+Total VRAM 8188 MB, total RAM 48322 MB
+pytorch version: 2.5.1+cu124
+A matching Triton is not available, some optimizations will not be enabled
+Traceback (most recent call last):
+  File "E:\ai\ComfyUI-aki-v1.6\ComfyUI-aki-v1.6\python\Lib\site-packages\xformers\__init__.py", line 57, in _is_triton_available
+    import triton  # noqa
+    ^^^^^^^^^^^^^
+ModuleNotFoundError: No module named 'triton'
+xformers version: 0.0.28.post3
+Set vram state to: NORMAL_VRAM
+Device: cuda:0 NVIDIA GeForce RTX 4060 Laptop GPU : cudaMallocAsync
+Using async weight offloading with 2 streams
+Enabled pinned memory 21745.0
+Torch version too old to set sdpa backend priority.
+Using xformers attention
+Unsupported Pytorch detected. DynamicVRAM support requires Pytorch version 2.8 or later. Falling back to legacy ModelPatcher. VRAM estimates may be unreliable especially on Windows
+Python version: 3.11.9 (tags/v3.11.9:de54cf5, Apr  2 2024, 10:12:12) [MSC v.1938 64 bit (AMD64)]
+ComfyUI version: 0.18.2
+comfy-aimdo version: 0.2.12
+comfy-kitchen version: 0.2.8
+ComfyUI frontend version: 1.41.21
+[Prompt Server] web root: E:\ai\ComfyUI-aki-v1.6\ComfyUI-aki-v1.6\python\Lib\site-packages\comfyui_frontend_package\static
+Asset seeder disabled
+NumExpr defaulting to 16 threads.
+[Crystools [0;32mINFO[0m] Crystools version: 1.22.1
+[Crystools [0;32mINFO[0m] CPU: AMD Ryzen 7 7840H w/ Radeon 780M Graphics - Arch: AMD64 - OS: Windows 10
+[Crystools [0;32mINFO[0m] Pynvml (Nvidia) initialized.
+[Crystools [0;32mINFO[0m] GPU/s:
+[Crystools [0;32mINFO[0m] 0) NVIDIA GeForce RTX 4060 Laptop GPU
+[Crystools [0;32mINFO[0m] NVIDIA Driver: 616.92
+### Loading: ComfyUI-Impact-Pack (V8.11)
+[Impact Pack] Wildcards loading done.
+### Loading: ComfyUI-Inspire-Pack (V1.18)
+Total VRAM 8188 MB, total RAM 48322 MB
+pytorch version: 2.5.1+cu124
+xformers version: 0.0.28.post3
+Set vram state to: NORMAL_VRAM
+Device: cuda:0 NVIDIA GeForce RTX 4060 Laptop GPU : cudaMallocAsync
+Using async weight offloading with 2 streams
+Enabled pinned memory 21745.0
+### Loading: ComfyUI-Manager (V3.31.10)
+[ComfyUI-Manager] network_mode: public
+### ComfyUI Version: v0.18.3 | Released on '2026-03-26'
+(pysssss:WD14Tagger) [DEBUG] Available ORT providers: TensorrtExecutionProvider, CUDAExecutionProvider, CPUExecutionProvider
+(pysssss:WD14Tagger) [DEBUG] Using ORT providers: CUDAExecutionProvider, CPUExecutionProvider
+Workspace manager - Openning file hash dict
+### Loading: Workspace Manager (V1.0.0)
+[36;20m[E:\ai\ComfyUI-aki-v1_x_6\ComfyUI-aki-v1_x_6\ComfyUI\custom_nodes\comfyui_controlnet_aux] | INFO -> Using ckpts path: E:\ai\ComfyUI-aki-v1.6\ComfyUI-aki-v1.6\ComfyUI\custom_nodes\comfyui_controlnet_aux\ckpts[0m
+[36;20m[E:\ai\ComfyUI-aki-v1_x_6\ComfyUI-aki-v1_x_6\ComfyUI\custom_nodes\comfyui_controlnet_aux] | INFO -> Using symlinks: False[0m
+[36;20m[E:\ai\ComfyUI-aki-v1_x_6\ComfyUI-aki-v1_x_6\ComfyUI\custom_nodes\comfyui_controlnet_aux] | INFO -> Using ort providers: ['CUDAExecutionProvider', 'DirectMLExecutionProvider', 'OpenVINOExecutionProvider', 'ROCMExecutionProvider', 'CPUExecutionProvider', 'CoreMLExecutionProvider'][0m
+[ComfyUI-Manager] default cache updated: https://raw.githubusercontent.com/ltdrdata/ComfyUI-Manager/main/model-list.json
+DWPose: Onnxruntime with acceleration providers detected
+[ComfyUI-Manager] default cache updated: https://raw.githubusercontent.com/ltdrdata/ComfyUI-Manager/main/alter-list.json
+[ComfyUI-Manager] default cache updated: https://raw.githubusercontent.com/ltdrdata/ComfyUI-Manager/main/extension-node-map.json
+[ComfyUI-Manager] default cache updated: https://raw.githubusercontent.com/ltdrdata/ComfyUI-Manager/main/custom-node-list.json
+[ComfyUI-Manager] default cache updated: https://raw.githubusercontent.com/ltdrdata/ComfyUI-Manager/main/github-stats.json
+[1;35m
+### [START] ComfyUI AlekPet Nodes [1;34mv1.0.57[0m[1;35m ###[0m
+[92mNode -> ArgosTranslateNode: [93mArgosTranslateCLIPTextEncodeNode, ArgosTranslateTextNode[0m [92m[92m[Loading][0m[0m
+[92mNode -> ChatGLMNode: [93mChatGLM4TranslateCLIPTextEncodeNode, ChatGLM4TranslateTextNode, ChatGLM4InstructNode, ChatGLM4InstructMediaNode[0m [92m[92m[Loading][0m[0m
+[92mNode -> DeepLXTranslateNode: [93mDeepLXTranslateCLIPTextEncodeNode, DeepLXTranslateTextNode[0m [92m[1;31;40m[Failed][0m[0m
+[92mNode -> DeepTranslatorNode: [93mDeepTranslatorCLIPTextEncodeNode, DeepTranslatorTextNode[0m [92m[92m[Loading][0m[0m
+[92mNode -> ExtrasNode: [93mPreviewTextNode, HexToHueNode, ColorsCorrectNode[0m [92m[92m[Loading][0m[0m
+[92mNode -> GoogleTranslateNode: [93mGoogleTranslateCLIPTextEncodeNode, GoogleTranslateTextNode[0m [92m[92m[Loading][0m[0m
+[92mNode -> IDENode: [93mIDENode[0m [92m[92m[Loading][0m[0m
+[92mNode -> PainterNode: [93mPainterNode[0m [92m[92m[Loading][0m[0m
+[92mNode -> PoseNode: [93mPoseNode[0m [92m[92m[Loading][0m[0m
+[92m
+[1;31;40m* Nodes have been temporarily disabled due to the error *[0m
+[93mDeepLXTranslateNode -> [1;31;40m[1;31;40mError path to 'Golang (Go)' not exists: [95mE:\ai\ComfyUI-aki-v1.6\ComfyUI-aki-v1.6\ComfyUI\custom_nodes\comfyui_custom_nodes_alekpet\DeepLXTranslateNode\go\bin[0m [0m
+[0m
+[1;35m### [END] ComfyUI AlekPet Nodes ###[0m
+[34mFizzleDorf Custom Nodes: [92mLoaded[0m
+E:\ai\ComfyUI-aki-v1.6\ComfyUI-aki-v1.6\python\Lib\site-packages\_distutils_hack\__init__.py:33: UserWarning: Setuptools is replacing distutils.
+  warnings.warn("Setuptools is replacing distutils.")
+FaceDetailer: Model directory already exists
+FaceDetailer: Model already exists
+[36mEfficiency Nodes:[0m Attempting to add Control Net options to the 'HiRes-Fix Script' Node (comfyui_controlnet_aux add-on)...[92mSuccess![0m
+FETCH ComfyRegistry Data: 5/201
+[34mWAS Node Suite: [0mOpenCV Python FFMPEG support is enabled[0m
+[34mWAS Node Suite [93mWarning: [0m`ffmpeg_bin_path` is not set in `E:\ai\ComfyUI-aki-v1.6\ComfyUI-aki-v1.6\ComfyUI\custom_nodes\pr-was-node-suite-comfyui-47064894\was_suite_config.json` config file. Will attempt to use system ffmpeg binaries if available.[0m
+[34mWAS Node Suite: [0mFinished.[0m [32mLoaded[0m [0m220[0m [32mnodes successfully.[0m
+
+	[3m[93m"Every artist dips his brush in his own soul, and paints his own nature into his pictures."[0m[3m - Henry Ward Beecher[0m
+
+
+[92m[rgthree-comfy] Loaded 42 magnificent nodes. 🎉[00m
+
+
+Import times for custom nodes:
+   0.0 seconds: E:\ai\ComfyUI-aki-v1.6\ComfyUI-aki-v1.6\ComfyUI\custom_nodes\websocket_image_save.py
+   0.0 seconds: E:\ai\ComfyUI-aki-v1.6\ComfyUI-aki-v1.6\ComfyUI\custom_nodes\AIGODLIKE-COMFYUI-TRANSLATION
+   0.0 seconds: E:\ai\ComfyUI-aki-v1.6\ComfyUI-aki-v1.6\ComfyUI\custom_nodes\sd-dynamic-thresholding
+   0.0 seconds: E:\ai\ComfyUI-aki-v1.6\ComfyUI-aki-v1.6\ComfyUI\custom_nodes\ComfyUi_PromptStylers
+   0.0 seconds: E:\ai\ComfyUI-aki-v1.6\ComfyUI-aki-v1.6\ComfyUI\custom_nodes\comfyui-WD14-Tagger
+   0.0 seconds: E:\ai\ComfyUI-aki-v1.6\ComfyUI-aki-v1.6\ComfyUI\custom_nodes\comfyui_ipadapter_plus
+   0.0 seconds: E:\ai\ComfyUI-aki-v1.6\ComfyUI-aki-v1.6\ComfyUI\custom_nodes\comfyui-layerdiffuse
+   0.0 seconds: E:\ai\ComfyUI-aki-v1.6\ComfyUI-aki-v1.6\ComfyUI\custom_nodes\ComfyUI-OpenPose
+   0.0 seconds: E:\ai\ComfyUI-aki-v1.6\ComfyUI-aki-v1.6\ComfyUI\custom_nodes\comfyui_fizznodes
+   0.0 seconds: E:\ai\ComfyUI-aki-v1.6\ComfyUI-aki-v1.6\ComfyUI\custom_nodes\comfyui_UltimateSDUpscale
+   0.0 seconds: E:\ai\ComfyUI-aki-v1.6\ComfyUI-aki-v1.6\ComfyUI\custom_nodes\comfyui-custom-scripts
+   0.0 seconds: E:\ai\ComfyUI-aki-v1.6\ComfyUI-aki-v1.6\ComfyUI\custom_nodes\comfyui_essentials
+   0.0 seconds: E:\ai\ComfyUI-aki-v1.6\ComfyUI-aki-v1.6\ComfyUI\custom_nodes\comfyui-advanced-controlnet
+   0.0 seconds: E:\ai\ComfyUI-aki-v1.6\ComfyUI-aki-v1.6\ComfyUI\custom_nodes\comfyui-frame-interpolation
+   0.0 seconds: E:\ai\ComfyUI-aki-v1.6\ComfyUI-aki-v1.6\ComfyUI\custom_nodes\rgthree-comfy
+   0.0 seconds: E:\ai\ComfyUI-aki-v1.6\ComfyUI-aki-v1.6\ComfyUI\custom_nodes\comfyui-workspace-manager
+   0.1 seconds: E:\ai\ComfyUI-aki-v1.6\ComfyUI-aki-v1.6\ComfyUI\custom_nodes\comfyui-KJNodes
+   0.1 seconds: E:\ai\ComfyUI-aki-v1.6\ComfyUI-aki-v1.6\ComfyUI\custom_nodes\comfyui-animatediff-evolved
+   0.1 seconds: E:\ai\ComfyUI-aki-v1.6\ComfyUI-aki-v1.6\ComfyUI\custom_nodes\comfyui-Inspire-Pack
+   0.1 seconds: E:\ai\ComfyUI-aki-v1.6\ComfyUI-aki-v1.6\ComfyUI\custom_nodes\efficiency-nodes-comfyui
+   0.1 seconds: E:\ai\ComfyUI-aki-v1.6\ComfyUI-aki-v1.6\ComfyUI\custom_nodes\comfyui-Impact-Pack
+   0.2 seconds: E:\ai\ComfyUI-aki-v1.6\ComfyUI-aki-v1.6\ComfyUI\custom_nodes\comfyui-videohelpersuite
+   0.3 seconds: E:\ai\ComfyUI-aki-v1.6\ComfyUI-aki-v1.6\ComfyUI\custom_nodes\comfyui_controlnet_aux
+   0.4 seconds: E:\ai\ComfyUI-aki-v1.6\ComfyUI-aki-v1.6\ComfyUI\custom_nodes\ComfyUI-Crystools
+   0.5 seconds: E:\ai\ComfyUI-aki-v1.6\ComfyUI-aki-v1.6\ComfyUI\custom_nodes\comfyui-HunyuanVideoWrapper
+   0.7 seconds: E:\ai\ComfyUI-aki-v1.6\ComfyUI-aki-v1.6\ComfyUI\custom_nodes\comfyui-manager
+   2.9 seconds: E:\ai\ComfyUI-aki-v1.6\ComfyUI-aki-v1.6\ComfyUI\custom_nodes\DZ-FaceDetailer
+   3.1 seconds: E:\ai\ComfyUI-aki-v1.6\ComfyUI-aki-v1.6\ComfyUI\custom_nodes\pr-was-node-suite-comfyui-47064894
+   3.7 seconds: E:\ai\ComfyUI-aki-v1.6\ComfyUI-aki-v1.6\ComfyUI\custom_nodes\comfyui_custom_nodes_alekpet
+
+Context impl SQLiteImpl.
+Will assume non-transactional DDL.
+Starting server
+
+To see the GUI go to: http://127.0.0.1:8188
+FETCH ComfyRegistry Data: 10/201
+FETCH ComfyRegistry Data: 15/201
+FETCH ComfyRegistry Data: 20/201
+FETCH ComfyRegistry Data: 25/201
+FETCH ComfyRegistry Data: 30/201
+FETCH ComfyRegistry Data: 35/201
+FETCH ComfyRegistry Data: 40/201
+FETCH ComfyRegistry Data: 45/201
+FETCH ComfyRegistry Data: 50/201
+FETCH ComfyRegistry Data: 55/201
+FETCH ComfyRegistry Data: 60/201
+FETCH ComfyRegistry Data: 65/201
+FETCH ComfyRegistry Data: 70/201
+FETCH ComfyRegistry Data: 75/201
+FETCH ComfyRegistry Data: 80/201
+FETCH ComfyRegistry Data: 85/201
+FETCH ComfyRegistry Data: 90/201
+FETCH ComfyRegistry Data: 95/201
+FETCH ComfyRegistry Data: 100/201
+FETCH ComfyRegistry Data: 105/201
+FETCH ComfyRegistry Data: 110/201
+FETCH ComfyRegistry Data: 115/201
+FETCH ComfyRegistry Data: 120/201
+FETCH ComfyRegistry Data: 125/201
+FETCH ComfyRegistry Data: 130/201
+FETCH ComfyRegistry Data: 135/201
+FETCH ComfyRegistry Data: 140/201
+FETCH ComfyRegistry Data: 145/201
+FETCH ComfyRegistry Data: 150/201
+FETCH ComfyRegistry Data: 155/201
+FETCH ComfyRegistry Data: 160/201
+FETCH ComfyRegistry Data: 165/201
+FETCH ComfyRegistry Data: 170/201
+FETCH ComfyRegistry Data: 175/201
+FETCH ComfyRegistry Data: 180/201
+FETCH ComfyRegistry Data: 185/201
+FETCH ComfyRegistry Data: 190/201
+FETCH ComfyRegistry Data: 195/201
+FETCH ComfyRegistry Data: 200/201
+FETCH ComfyRegistry Data [DONE]
+[ComfyUI-Manager] default cache updated: https://api.comfy.org/nodes
+FETCH DATA from: https://raw.githubusercontent.com/ltdrdata/ComfyUI-Manager/main/custom-node-list.json [DONE]
+[ComfyUI-Manager] All startup tasks have been completed.

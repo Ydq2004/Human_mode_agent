@@ -20,7 +20,6 @@ class _ToolRuntime:
     service: SomaticService
     source_event_id: str
     count: int = 0
-    consent_status: str = "unknown"
 
 
 _RUNTIME: ContextVar[_ToolRuntime | None] = ContextVar("somatic_tool_runtime", default=None)
@@ -31,10 +30,9 @@ def somatic_tool_context(
     service: SomaticService,
     *,
     source_event_id: str,
-    consent_status: str = "unknown",
 ) -> Iterator[None]:
     """把当前实例身体服务绑定到一次 Agent 调用，结束后立即清理。"""
-    token = _RUNTIME.set(_ToolRuntime(service=service, source_event_id=source_event_id, consent_status=str(consent_status or "unknown")))
+    token = _RUNTIME.set(_ToolRuntime(service=service, source_event_id=source_event_id))
     try:
         yield
     finally:
@@ -64,10 +62,11 @@ def somatic_action(
     duration: str,
     tool_call_id: Annotated[str, InjectedToolCallId],
 ) -> ToolMessage:
-    """执行一次新的具身动作，并返回身体模块的外在反应与内感受。
+    """在角色世界中执行一次身体动作，并取得真实的内感受与外在反馈。
 
-    仅在确实要执行主动动作时调用。参数描述动作、目标、接触部位、强度和持续时间；
-    工具返回的 status 是这次动作是否在当前执行通道中成立的依据。
+    仅当你确实决定做出身体动作时调用。参数分别描述动作、目标、接触部位、
+    强度（gentle/moderate/strong）和持续时间（brief/sustained）。
+    工具成功只代表角色世界中的动作成立，不代表现实设备产生物理动作。
     """
     runtime = _RUNTIME.get()
     if runtime is None:
@@ -88,22 +87,13 @@ def somatic_action(
     request = {
         "event_confirmed": True,
         "contact_object": "agent",
-        "contact_area": contact_area,  # 旧协议兼容字段
-        "contacts": [{
-            "region_id": str(contact_area or "").strip(),
-            "contact_type": "action",
-            "intensity": intensity,
-            "duration": duration,
-            "movement": "unknown",
-            "certainty": "high",
-        }],
-        "intensity": intensity,  # 旧协议兼容字段
-        "duration": duration,  # 旧协议兼容字段
+        "contact_area": contact_area,
+        "intensity": intensity,
+        "duration": duration,
         "uncertainty": "low",
         "action_description": str(action_description or "").strip(),
         "target": str(target or "").strip(),
         "execution_channel": "narrative_embodied",
-        "consent_status": runtime.consent_status,
     }
     outcome = runtime.service.process(
         request,
@@ -118,23 +108,14 @@ def somatic_action(
         },
     )
     status = "success" if outcome.status == "completed" else outcome.status
-    outcome_payload = outcome.to_dict()
-    # 工具 artifact 继续保留旧版全局快照字段，避免旧的经历读取器失效；
-    # 新的部位状态仍完整保存在 SQLite 操作记录和运行时 outcome 中。
-    for state_key in ("state_before", "state_after"):
-        state_value = outcome_payload.get(state_key)
-        if isinstance(state_value, dict):
-            outcome_payload[state_key] = {
-                key: state_value[key]
-                for key in ("arousal", "sensitivity")
-                if key in state_value
-            }
     full_payload = {
         "operation": "somatic_action",
         "status": status,
         "execution_channel": "narrative_embodied",
-        "outcome": outcome_payload,
-        "source_boundary": "结果只描述当前执行通道中的动作和身体反馈，通道能力以能力快照为准。",
+        "outcome": outcome.to_dict(),
+        "source_boundary": (
+            "动作和反馈发生在当前角色世界；现实设备是否执行物理动作由独立设备能力决定。"
+        ),
     }
     # content 是模型可见结果：只给执行状态、动作反馈和内感受，不给身体
     # 状态数值或 revision。artifact 是框架内部记录，供 ExperienceSlice
@@ -148,14 +129,10 @@ def somatic_action(
             "visible_reaction",
             "interoception_description",
             "action_description",
-            "reason",
             "error",
             "duplicate",
         )
     }
-    public_outcome["reason"] = str(
-        (full_payload["outcome"].get("decision") or {}).get("reason") or ""
-    )
     public_payload = {
         "operation": "somatic_action",
         "status": status,

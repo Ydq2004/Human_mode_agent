@@ -12,7 +12,9 @@
 /.claude/
 /AGENTS.md
 /CLAUDE.md
-
+/.codex-build/
+/.codex-finalizer/
+/.codex-output/
 # 私人资料
 /个人总结/
 /前沿技术资料库/

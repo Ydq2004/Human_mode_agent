@@ -13,6 +13,7 @@ import mimetypes
 import os
 import secrets
 import threading
+import hashlib
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -39,6 +40,11 @@ from core.card_slot_manager import (
 
 
 STATIC_ROOT = Path(__file__).with_name("static")
+
+# 浏览器刷新、关闭页面或桌面壳重载时，客户端可能在响应写回前主动
+# 关闭 TCP 连接。这不是服务端处理失败；尤其不能在异常处理路径中
+# 再次发送错误响应，否则会把同一个网络竞态打印成两段 traceback。
+_CLIENT_DISCONNECT_ERRORS = (BrokenPipeError, ConnectionAbortedError, ConnectionResetError)
 
 
 class _SingleInstanceLock:
@@ -96,11 +102,16 @@ class WebApplicationState:
 
     def submit_text(self, content: str) -> dict[str, Any]:
         with self._lock:
-            return self.runtime.submit_text(content)
+            from core.perception import create_perception_event
+            return self.runtime.submit_event_async(create_perception_event("user", "text", content))
+
+    def async_status(self, event_id: str) -> dict[str, Any] | None:
+        return self.runtime.async_status(event_id)
 
     def submit_image(self, path: str | Path) -> dict[str, Any]:
         with self._lock:
-            return self.runtime.submit_image(path)
+            from core.vision_input import create_image_event
+            return self.runtime.submit_event_async(create_image_event(path))
 
     def switch_thread(self, thread_id: str) -> dict[str, Any]:
         with self._lock:
@@ -113,6 +124,10 @@ class WebApplicationState:
             self.runtime.shutdown()
             self.runtime = ApplicationRuntime(thread_id=thread_id)
             return self.runtime.status()
+
+    def confirm_browser_action(self, confirmation_id: str, approved: bool) -> dict[str, Any]:
+        with self._lock:
+            return self.runtime.confirm_browser_action(confirmation_id, approved)
 
 
 def _json_default(value: Any) -> Any:
@@ -149,12 +164,16 @@ class RequestHandler(BaseHTTPRequestHandler):
         return
 
     def _send_bytes(self, data: bytes, *, status: int, content_type: str) -> None:
-        self.send_response(status)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(data)))
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        self.wfile.write(data)
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(data)
+        except _CLIENT_DISCONNECT_ERRORS:
+            # 客户端已经离开，继续写入或发送错误响应都没有意义。
+            return
 
     def _send_json(self, payload: Any, *, status: int = HTTPStatus.OK) -> None:
         data = json.dumps(payload, ensure_ascii=False, default=_json_default).encode("utf-8")
@@ -232,6 +251,18 @@ class RequestHandler(BaseHTTPRequestHandler):
             if path == "/api/history":
                 self._send_json({"messages": self.state.runtime.history()})
                 return
+            if path.startswith("/api/event/"):
+                event_id = unquote(path.rsplit("/", 1)[-1])
+                value = self.state.async_status(event_id)
+                if value is None:
+                    self._send_json({"error": "event_not_found"}, status=HTTPStatus.NOT_FOUND)
+                elif value.get("status") == "completed":
+                    # _ui_result 的字段来自旧版同步接口，其中也有一个
+                    # succeeded 状态；完成事件的轮询协议必须以后端任务状态为准。
+                    self._send_json({**_ui_result(value["result"]), "status": "completed"})
+                else:
+                    self._send_json({k: v for k, v in value.items() if k != "result"})
+                return
             if path == "/api/slots":
                 active = get_active_slot()
                 self._send_json({
@@ -269,19 +300,24 @@ class RequestHandler(BaseHTTPRequestHandler):
         try:
             if parsed.path == "/api/message":
                 payload = self._read_json()
-                self._send_json(_ui_result(self.state.submit_text(payload.get("content", ""))))
+                self._send_json(self.state.submit_text(payload.get("content", "")), status=HTTPStatus.ACCEPTED)
                 return
             if parsed.path == "/api/image":
                 filename, data = self._read_image_upload()
                 target = self._store_upload(filename, data)
-                response = _ui_result(self.state.submit_image(target))
+                response = self.state.submit_image(target)
                 metadata = inspect_image(target)
                 response["input_media"] = {
                     "filename": target.name,
                     "mime_type": metadata["mime_type"],
                     "url": f"/media/attachments/{target.name}",
                 }
-                self._send_json(response)
+                response["input_media"] = {
+                    "filename": target.name,
+                    "mime_type": metadata["mime_type"],
+                    "url": f"/media/attachments/{target.name}",
+                }
+                self._send_json(response, status=HTTPStatus.ACCEPTED)
                 return
             if parsed.path == "/api/settings/thread":
                 payload = self._read_json()
@@ -289,6 +325,28 @@ class RequestHandler(BaseHTTPRequestHandler):
                 return
             if parsed.path == "/api/settings/reload":
                 self._send_json(self.state.reload_runtime())
+                return
+            if parsed.path == "/api/browser/confirm":
+                payload = self._read_json()
+                self._send_json(self.state.confirm_browser_action(
+                    payload.get("confirmation_id", ""),
+                    bool(payload.get("approved", False)),
+                ))
+                return
+            if parsed.path == "/api/choose_slot_folder":
+                # 本机 Web 模式下由后端弹出 Windows 文件夹选择器；浏览器本身
+                # 无法安全地提供用户文件夹的绝对路径。
+                import tkinter as tk
+                from tkinter import filedialog
+                root = tk.Tk()
+                root.withdraw()
+                root.attributes("-topmost", True)
+                selected = filedialog.askdirectory(title="选择包含 persona_config.json 的角色文件夹")
+                root.destroy()
+                if not selected:
+                    self._send_json({"status": "cancelled"})
+                else:
+                    self._send_json({"status": "selected", "path": str(Path(selected).resolve())})
                 return
             if parsed.path == "/api/shutdown":
                 # 先返回确认，再由独立线程调用 shutdown；HTTP 请求线程不能
@@ -329,12 +387,24 @@ class RequestHandler(BaseHTTPRequestHandler):
                 if not path:
                     raise ValueError("角色槽位路径不能为空")
                 folder_name = Path(path.rstrip("\\/")).name or "slot"
-                slot_id = str(payload.get("slot_id") or folder_name).strip()
-                selected = register_slot(
-                    slot_id,
-                    path,
-                    name=payload.get("name") or folder_name,
-                )
+                normalised = Path(path).expanduser().resolve(strict=False)
+                existing = next((item for item in list_slots() if item.path == normalised), None)
+                if existing is not None:
+                    selected = existing
+                else:
+                    # 角色切换只需要一个稳定的内部登记名；用户不需要管理它。
+                    # 内部 ID 永远使用 ASCII，角色文件夹名称只作为显示名，
+                    # 避免中文或特殊字符触发槽位 ID 校验。
+                    digest = hashlib.sha256(str(normalised).encode("utf-8")).hexdigest()[:16]
+                    slot_id = f"folder_{digest}"
+                    suffix = 2
+                    existing_ids = {item.slot_id for item in list_slots()}
+                    candidate = slot_id
+                    while candidate in existing_ids:
+                        candidate = f"{slot_id}_{suffix}"
+                        suffix += 1
+                    selected = register_slot(candidate, path, name=folder_name)
+                selected = set_active_slot(selected.slot_id)
                 self._send_json({"status": "registered", "slot": selected.to_dict()}, status=201)
                 return
             self._send_json({"error": "not_found"}, status=404)

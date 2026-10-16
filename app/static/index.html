@@ -76,11 +76,57 @@
   <script>
     const $ = (id) => document.getElementById(id);
     const messages = $('messages');
+    const localMessages = new Map();
+    const pendingEventKey = 'human_mode_pending_events';
+    const legacyPendingEventKey = 'human_mode_pending_event';
+    let localMessageOrder = 0;
+    let serverMessages = [];
+    let historyRequestSequence = 0;
+    let appliedHistoryRequest = 0;
     function esc(text) { return String(text ?? ''); }
     function mediaUrl(kind, filename) { return `/media/${kind}/${encodeURIComponent(filename)}`; }
+    function messageKey(m) {
+      return `${m.event_id || ''}:${m.kind || ''}:${m.action_id || ''}`;
+    }
+    function rememberLocalMessage(m) {
+      const message = {...m, _localOrder: ++localMessageOrder};
+      localMessages.set(messageKey(message), message);
+      return message;
+    }
+    function readPendingEvents() {
+      let value;
+      try {
+        const raw = localStorage.getItem(pendingEventKey) ?? localStorage.getItem(legacyPendingEventKey) ?? '[]';
+        value = JSON.parse(raw);
+      } catch (_) { value = []; }
+      if (Array.isArray(value)) return value.filter(item => item && item.event_id);
+      // 兼容上一版只保存一个对象的格式，避免正在处理的消息在升级后消失。
+      return value && value.event_id ? [value] : [];
+    }
+    function writePendingEvents(items) {
+      if (items.length) localStorage.setItem(pendingEventKey, JSON.stringify(items));
+      else localStorage.removeItem(pendingEventKey);
+      localStorage.removeItem(legacyPendingEventKey);
+    }
+    function upsertPendingEvent(eventId, patch) {
+      const items = readPendingEvents();
+      const index = items.findIndex(item => item.event_id === eventId);
+      const next = {...(index >= 0 ? items[index] : {event_id: eventId}), ...patch};
+      if (index >= 0) items[index] = next; else items.push(next);
+      writePendingEvents(items);
+      return next;
+    }
+    function removePendingEvent(eventId) {
+      writePendingEvents(readPendingEvents().filter(item => item.event_id !== eventId));
+    }
+    function showLocalMessage(message) {
+      rememberLocalMessage(message);
+      renderMessageList(serverMessages);
+    }
     function renderMessage(m) {
       const el = document.createElement('article');
       el.className = `message ${m.kind}`;
+      el.dataset.messageKey = messageKey(m);
       const label = document.createElement('div'); label.className = 'label'; label.textContent = m.kind === 'user' ? '我' : 'Agent';
       const body = document.createElement('div'); body.textContent = esc(m.content);
       el.append(label, body);
@@ -100,13 +146,88 @@
       }
       messages.appendChild(el);
     }
-    async function loadHistory() {
-      const data = await (await fetch('/api/history')).json();
+    function renderMessageList(historyMessages) {
+      const history = Array.isArray(historyMessages) ? historyMessages : [];
+      // 所有重绘都经过这里。这样历史请求返回旧快照时，也会保留尚未被
+      // 服务端确认的本地消息，不会把用户刚发出的内容从画面上抹掉。
+      const serverKeys = new Set(history.map(messageKey));
+      for (const [key] of localMessages) {
+        if (serverKeys.has(key)) localMessages.delete(key);
+      }
+      const merged = [...history, ...localMessages.values()];
+      merged.sort((left, right) => {
+        const leftSequence = Number.isFinite(Number(left.event_sequence)) ? Number(left.event_sequence) : Number.MAX_SAFE_INTEGER;
+        const rightSequence = Number.isFinite(Number(right.event_sequence)) ? Number(right.event_sequence) : Number.MAX_SAFE_INTEGER;
+        if (leftSequence !== rightSequence) return leftSequence - rightSequence;
+        const leftTime = String(left.occurred_at || '');
+        const rightTime = String(right.occurred_at || '');
+        if (leftTime !== rightTime) return leftTime.localeCompare(rightTime);
+        return (left._localOrder || 0) - (right._localOrder || 0);
+      });
       messages.replaceChildren();
-      (data.messages || []).forEach(renderMessage);
+      merged.forEach(renderMessage);
       messages.scrollTop = messages.scrollHeight;
       const last = messages.lastElementChild;
       if (last) last.scrollIntoView({block: 'end'});
+    }
+    async function fetchHistory() {
+      const requestId = ++historyRequestSequence;
+      const response = await fetch('/api/history');
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.message || data.error || '历史记录读取失败');
+      // 较早发出的请求可能较晚返回，不能让它覆盖更新的历史快照。
+      if (requestId < appliedHistoryRequest) return serverMessages;
+      appliedHistoryRequest = requestId;
+      const incoming = Array.isArray(data.messages) ? data.messages : [];
+      // ExperienceSlice 是追加且不可变的；把本次快照与已确认历史合并，
+      // 防止数据库提交窗口或临时短响应让旧记录从界面上消失。
+      const known = new Map(serverMessages.map(item => [messageKey(item), item]));
+      incoming.forEach(item => known.set(messageKey(item), item));
+      serverMessages = [...known.values()];
+      renderMessageList(serverMessages);
+      reconcilePendingEvents(serverMessages);
+      return serverMessages;
+    }
+    function reconcilePendingEvents(history) {
+      const keys = new Set((history || []).map(messageKey));
+      const remaining = readPendingEvents().filter(item => {
+        // 只有服务端已经有 Agent 回复，才认为整轮消息可靠落库。
+        // 仅有 user 记录时继续保留本地缓存，防止刷新期间丢失未完成轮次。
+        return !(keys.has(`${item.event_id}:user:`) && keys.has(`${item.event_id}:agent:`));
+      });
+      writePendingEvents(remaining);
+    }
+    async function loadHistory() {
+      return fetchHistory();
+    }
+    async function syncHistory(eventId) {
+      // 事件状态先于历史查询返回时，给 SQLite 写入一个很短的提交窗口，
+      // 避免完成后的首个刷新仍读到旧列表。
+      for (let attempt = 0; attempt < 4; attempt += 1) {
+        const history = await fetchHistory();
+        if (!eventId || history.some(item => item.event_id === eventId && item.kind === 'agent')) return true;
+        await new Promise(resolve => setTimeout(resolve, 150));
+      }
+      return false;
+    }
+    async function waitForEvent(eventId) {
+      let state = {};
+      for (let attempt = 0; attempt < 1500; attempt += 1) {
+        await new Promise(resolve => setTimeout(resolve, 400));
+        const response = await fetch(`/api/event/${encodeURIComponent(eventId)}`);
+        state = await response.json();
+        if (!response.ok) {
+          const error = new Error(state.message || state.error || '无法读取本轮处理状态');
+          error.eventNotFound = response.status === 404;
+          throw error;
+        }
+        const labels = {queued:'排队中…', perception:'正在感知事件…', understanding:'正在理解输入…', memory_activation:'正在唤起相关记忆…', agent:'Agent 正在生成回复…', tool:'正在调用工具…', experience:'正在保存本轮经历…', completed:'处理完成', failed:'处理失败'};
+        $('progress').textContent = labels[state.stage] || '正在处理…';
+        // 兼容旧版后端把成功结果标成 succeeded 的响应；新版使用
+        // completed 表示异步事件已结束。
+        if (state.status === 'completed' || state.status === 'succeeded' || state.status === 'failed') return state;
+      }
+      throw new Error('本轮处理超过 10 分钟，已停止等待；可稍后刷新查看历史。');
     }
     async function loadStatus() {
       const data = await (await fetch('/api/status')).json();
@@ -140,26 +261,56 @@
       $('progress').textContent = '消息已发送，正在感知事件…'; $('progress-bar').classList.add('active');
       document.querySelector('button[type="submit"]').disabled = true;
       $('content').disabled = true; $('imageButton').disabled = true; $('image').disabled = true;
-      let response;
-      if (file) {
-        const form = new FormData(); form.append('file', file);
-        response = await fetch('/api/image', {method:'POST', body:form});
-      } else {
-        response = await fetch('/api/message', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({content:text})});
+      let userEventId = '';
+      const resetComposer = () => {
+        $('progress').textContent = ''; $('progress-bar').classList.remove('active');
+        document.querySelector('button[type="submit"]').disabled = false;
+        $('content').disabled = false; $('imageButton').disabled = false; $('image').disabled = false;
+      };
+      try {
+        let response;
+        if (file) {
+          const form = new FormData(); form.append('file', file);
+          response = await fetch('/api/image', {method:'POST', body:form});
+        } else {
+          response = await fetch('/api/message', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({content:text})});
+        }
+        const result = await response.json();
+        userEventId = result.event_id || '';
+        if (!response.ok || !userEventId) throw new Error(result.message || result.error || '消息未能进入处理队列');
+        const localOccurredAt = new Date().toISOString();
+        upsertPendingEvent(userEventId, {
+          content: text || '[图片]',
+          metadata: file ? {path: result.input_media?.filename || ''} : {},
+          occurred_at: localOccurredAt,
+          status: 'pending',
+        });
+        // 先显示用户消息，即使后台稍后失败或页面失去连接，输入也不会凭空消失。
+        showLocalMessage({event_id: userEventId, kind: 'user', occurred_at: localOccurredAt, content: text || '[图片]', metadata: file ? {path: result.input_media?.filename || ''} : {}});
+
+        // 最长等待 10 分钟；网络错误和超时都必须结束等待，不能永久卡在处理中。
+        const state = await waitForEvent(userEventId);
+        if (state.status === 'failed') {
+          throw new Error(state.error || '本轮处理失败');
+        }
+
+        const immediateMessage = rememberLocalMessage({event_id: userEventId, kind: 'agent', occurred_at: new Date().toISOString(), content: state.visible_reply || '', media: state.media || []});
+        upsertPendingEvent(userEventId, {status: 'completed', agent: immediateMessage});
+        if (immediateMessage.content || immediateMessage.media.length) renderMessageList(serverMessages);
+        const persisted = await syncHistory(userEventId);
+        if (persisted) removePendingEvent(userEventId);
+        await loadStatus();
+      } catch (error) {
+        $('progress').textContent = `本轮未完成：${error.message || error}`;
+        if (userEventId) {
+          const failure = {event_id: userEventId, kind: 'agent', occurred_at: new Date().toISOString(), content: `（处理未完成：${error.message || error}）`};
+          upsertPendingEvent(userEventId, {status: 'failed', agent: failure});
+          showLocalMessage(failure);
+        }
+      } finally {
+        $('image').value = '';
+        resetComposer();
       }
-      const result = await response.json();
-      if (!response.ok) { alert(result.message || result.error || '本轮失败'); $('progress').textContent=''; $('progress-bar').classList.remove('active'); document.querySelector('button[type="submit"]').disabled=false; $('content').disabled=false; $('imageButton').disabled=false; $('image').disabled=false; return; }
-      let done = false;
-      while (!done) {
-        await new Promise(resolve => setTimeout(resolve, 400));
-        const state = await (await fetch(`/api/event/${encodeURIComponent(result.event_id)}`)).json();
-        const labels = {queued:'排队中…', perception:'正在感知事件…', understanding:'正在理解输入…', memory_activation:'正在唤起相关记忆…', agent:'Agent 正在生成回复…', tool:'正在调用工具…', experience:'正在保存本轮经历…', completed:'处理完成', failed:'处理失败'};
-        $('progress').textContent = labels[state.stage] || '正在处理…';
-        if (state.status === 'completed') { done = true; }
-        if (state.status === 'failed') { alert(state.error || '本轮失败'); done = true; }
-      }
-      await loadHistory(); await loadStatus(); $('image').value = '';
-      $('progress').textContent = ''; $('progress-bar').classList.remove('active'); document.querySelector('button[type="submit"]').disabled = false; $('content').disabled = false; $('imageButton').disabled = false; $('image').disabled = false;
     };
     $('imageButton').onclick = () => $('image').click();
     $('image').onchange = () => {
@@ -169,9 +320,9 @@
     $('settings').onclick = () => $('settingsDialog').showModal();
     $('saveThread').onclick = async () => {
       const response = await fetch('/api/settings/thread', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({thread_id:$('thread').value})});
-      const result = await response.json(); alert(result.message || result.error || '线程已切换'); if (response.ok) { await loadHistory(); await loadStatus(); }
+      const result = await response.json(); alert(result.message || result.error || '线程已切换'); if (response.ok) { serverMessages = []; await loadHistory(); await loadStatus(); }
     };
-    $('reload').onclick = async () => { const response = await fetch('/api/settings/reload', {method:'POST'}); const result = await response.json(); alert(result.error || '配置已刷新'); if (response.ok) { await loadHistory(); await loadStatus(); } };
+    $('reload').onclick = async () => { const response = await fetch('/api/settings/reload', {method:'POST'}); const result = await response.json(); alert(result.error || '配置已刷新'); if (response.ok) { serverMessages = []; await loadHistory(); await loadStatus(); } };
     $('chooseSlotFolder').onclick = async () => {
       const picker = await (await fetch('/api/choose_slot_folder', {method:'POST'})).json();
       if (picker.status !== 'selected') return;
@@ -200,7 +351,41 @@
         main.append(heading, message); document.body.replaceChildren(main);
       }
     };
-    Promise.all([loadHistory(), loadStatus(), loadSlots()]).catch(err => alert(err));
+    async function resumePendingEvent() {
+      const pendingEvents = readPendingEvents();
+      if (!pendingEvents.length) return;
+      pendingEvents.forEach(pending => {
+        showLocalMessage({event_id: pending.event_id, kind: 'user', occurred_at: pending.occurred_at || new Date().toISOString(), content: pending.content || '[消息]', metadata: pending.metadata || {}});
+        if (pending.agent) showLocalMessage(pending.agent);
+      });
+      const pending = pendingEvents.find(item => item.status === 'pending');
+      if (!pending) return;
+      $('progress').textContent = '页面已恢复，正在继续处理…'; $('progress-bar').classList.add('active');
+      document.querySelector('button[type="submit"]').disabled = true;
+      $('content').disabled = true; $('imageButton').disabled = true; $('image').disabled = true;
+      try {
+        const state = await waitForEvent(pending.event_id);
+        if (state.status === 'failed') {
+          throw new Error(state.error || '本轮处理失败');
+        }
+        const immediateMessage = rememberLocalMessage({event_id: pending.event_id, kind: 'agent', occurred_at: new Date().toISOString(), content: state.visible_reply || '', media: state.media || []});
+        upsertPendingEvent(pending.event_id, {status: 'completed', agent: immediateMessage});
+        if (immediateMessage.content || immediateMessage.media.length) renderMessageList(serverMessages);
+        const persisted = await syncHistory(pending.event_id);
+        if (persisted) removePendingEvent(pending.event_id);
+        await loadStatus();
+      } catch (error) {
+        $('progress').textContent = `本轮未完成：${error.message || error}`;
+        const failure = {event_id: pending.event_id, kind: 'agent', occurred_at: new Date().toISOString(), content: `（处理未完成：${error.message || error}）`};
+        upsertPendingEvent(pending.event_id, {status: 'failed', agent: failure});
+        showLocalMessage(failure);
+      } finally {
+        $('progress-bar').classList.remove('active');
+        document.querySelector('button[type="submit"]').disabled = false;
+        $('content').disabled = false; $('imageButton').disabled = false; $('image').disabled = false;
+      }
+    }
+    Promise.all([loadHistory(), loadStatus(), loadSlots()]).then(resumePendingEvent).catch(err => alert(err));
   </script>
 </body>
 </html>

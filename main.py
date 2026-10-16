@@ -8,6 +8,7 @@ CLI 只是输入适配器：
 """
 
 import json
+import os
 from copy import deepcopy
 from contextlib import nullcontext
 from pathlib import Path
@@ -65,10 +66,15 @@ from memory import background_task_store
 from memory.personality_store import ensure_personality_seed_from_persona
 from memory.somatic_store import ensure_somatic_store, get_somatic_state
 from tools.file_tools import read_file, list_directory, write_file, apply_patch
+from tools.process_tools import execute_command, run_command_task, run_process_task, start_process, get_process_status, get_process_output, terminate_process
 from tools.file_access_policy import load_policy
 from tools.somatic_tools import somatic_action, somatic_tool_context
 from tools.vision_tools import vision_describe_image, vision_tool_context
+from tools.knowledge_tools import search_knowledge_base
 from tools.image_generation_tools import generate_visual, image_generation_context
+from tools.http_tools import http_request
+from tools.web_search_tools import web_search, web_search_context
+from tools.browser_tools import browser_open, browser_snapshot, browser_close, browser_click, browser_fill, browser_context
 from tools.background_task_tools import (
     background_task_context,
     cancel_background_task,
@@ -88,6 +94,8 @@ from core.background_task_events import BackgroundTaskEventBus
 from core.background_task_worker import BackgroundTaskWorker
 from core.advanced_model_service import create_advanced_llm, run_code_review
 from core.image_generation_service import ImageGenerationService
+from core.web_search_service import WebSearchService
+from core.browser_service import BrowserService
 from config import BACKGROUND_TASK_STALE_MINUTES
 
 
@@ -261,7 +269,7 @@ def _build_capability_snapshot(tools: list | None, persona: dict | None = None) 
             name: {
                 "available": True,
                 "execution": "local",
-                "side_effect": name in {"write_file", "apply_patch", "generate_visual", "somatic_action"},
+                "side_effect": name in {"write_file", "apply_patch", "generate_visual", "somatic_action", "browser_click", "browser_fill", "terminate_process"},
             }
             for name in tool_names
         },
@@ -303,6 +311,11 @@ def _build_capability_snapshot(tools: list | None, persona: dict | None = None) 
             },
         },
     }
+    snapshot["network"] = {
+        "http_request": {"available": "http_request" in tool_names, "methods": ["GET"], "side_effect": False},
+        "web_search": {"available": "web_search" in tool_names, "provider": os.environ.get("WEB_SEARCH_PROVIDER", "brave"), "side_effect": False},
+        "browser": {"available": bool({"browser_open", "browser_snapshot", "browser_close"}.intersection(tool_names)), "interactive_actions": "confirmation_required" if {"browser_click", "browser_fill"}.intersection(tool_names) else "unavailable", "read": True},
+    }
     file_tool_names = {"read_file", "list_directory", "write_file", "apply_patch"}
     if file_tool_names.intersection(tool_names):
         try:
@@ -324,6 +337,7 @@ def _build_capability_snapshot(tools: list | None, persona: dict | None = None) 
             }
     if "somatic_action" in tool_names:
         embodiment = dict((persona or {}).get("embodiment") or {})
+        # 只报告能力与边界，不报告任何身体数值、部位清单或扩展参数。
         snapshot["somatic_simulation"] = {
             "enabled": bool(embodiment.get("enabled", True)),
             "tool": "somatic_action",
@@ -594,6 +608,7 @@ def _process_somatic_module_requests(
         candidate = item.get("event_candidate")
         if not isinstance(candidate, dict):
             continue
+        candidate = dict(candidate)
         outcomes.append(service.process(
             candidate,
             source_event_id=event.event_id,
@@ -717,6 +732,9 @@ def process_perception_event(
     advanced_llm=None,
     persona_instance_id: str | None = None,
     image_generation_service: ImageGenerationService | None = None,
+    web_search_service: WebSearchService | None = None,
+    browser_service: BrowserService | None = None,
+    progress_sink=None,
 ) -> dict:
     """
     处理一个感知事件，返回本轮上下文和 ExperienceSlice。
@@ -734,6 +752,11 @@ def process_perception_event(
     - resolver / judge
     - 任何长期记忆写入
     """
+    def report(stage, status="running"):
+        if progress_sink is not None:
+            progress_sink({"stage": stage, "status": status})
+
+    report("perception", "started")
     # 防止上一个事件的动态注入泄漏到当前事件。
     set_current_injection("")
     frame = _build_perception_frame(
@@ -744,6 +767,7 @@ def process_perception_event(
         capability_snapshot=capability_snapshot,
         somatic_service=somatic_service,
     )
+    report("understanding")
     context_result = build_agent_context(
         perception_frame=frame,
         understanding_llm=understanding_llm,
@@ -755,6 +779,7 @@ def process_perception_event(
         ).strip(),
     )
 
+    report("memory_activation")
     somatic_outcomes = _process_somatic_module_requests(
         context_result=context_result,
         event=event,
@@ -811,7 +836,10 @@ def process_perception_event(
             image_generation_context(image_generation_service)
             if image_generation_service is not None else nullcontext()
         )
-        with recall_call_budget(), somatic_context_manager, vision_context_manager, background_context_manager, image_context_manager:
+        search_context_manager = web_search_context(web_search_service) if web_search_service is not None else nullcontext()
+        browser_context_manager = browser_context(browser_service) if browser_service is not None else nullcontext()
+        report("agent")
+        with recall_call_budget(), somatic_context_manager, vision_context_manager, background_context_manager, image_context_manager, search_context_manager, browser_context_manager:
             result = agent.invoke(
                 {"messages": [model_message]},
                 config=agent_config,
@@ -852,6 +880,7 @@ def process_perception_event(
         triggered_by_event=event.event_id,
     )
 
+    report("experience")
     experience_slice = create_experience_slice(
         perception_event=event,
         perception_understanding=(
@@ -910,6 +939,7 @@ def process_perception_event(
     timings = dict(context_result.get("timings") or {})
     timings["main_agent_seconds"] = main_agent_seconds
 
+    report("completed", "completed")
     return {
         "perception_frame": frame,
         "context_result": context_result,
@@ -1336,12 +1366,24 @@ def main():
         apply_patch,
         somatic_action,
         vision_describe_image,
+        search_knowledge_base,
         consult_advanced_model,
         start_code_review,
         get_background_task_status,
         list_background_tasks,
         cancel_background_task,
         generate_visual,
+        http_request,
+        web_search,
+        browser_open,
+        browser_snapshot,
+        browser_close,
+        browser_click,
+        browser_fill,
+        start_process,
+        get_process_status,
+        get_process_output,
+        terminate_process,
     ]
 
     factory_result = create_agent_from_persona(
@@ -1381,6 +1423,8 @@ def main():
     if advanced_llm is None:
         print("高级模型未配置：咨询和代码审核工具当前不可用")
     image_generation_service = ImageGenerationService()
+    web_search_service = WebSearchService.from_environment()
+    browser_service = BrowserService()
 
     # 角色卡只在实例首次启动时复制为出生人格；后续修改角色卡不会覆盖 seed。
     # 当前只建立人格演化的输入，不把人格快照注入主 Agent。
@@ -1396,6 +1440,8 @@ def main():
             "code_review",
             lambda task: run_code_review(task, advanced_llm),
         )
+    background_worker.register("command", run_command_task)
+    background_worker.register("process", run_process_task)
     background_worker.submit_due(limit=100)
     ensure_somatic_store()
     embodiment = dict(persona.get("embodiment") or {})
@@ -1550,6 +1596,8 @@ def main():
                     advanced_llm=advanced_llm,
                     persona_instance_id=persona_instance_id,
                     image_generation_service=image_generation_service,
+                    web_search_service=web_search_service,
+                    browser_service=browser_service,
                 )
 
                 experience_slice = result["experience_slice"]
@@ -1596,6 +1644,7 @@ def main():
         )
         vector_repair_worker.shutdown(wait=True)
         background_worker.shutdown(wait=True)
+        browser_service.shutdown()
         _consume_background_task_events(background_event_bus)
 
 if __name__ == "__main__":
